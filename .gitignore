@@ -1,0 +1,13 @@
+# Vivado 批处理/仿真临时产物
+.Xil/
+*.jou
+*.log
+webtalk*
+xsim.dir/
+
+# 本目录下的 BSDL 副本（第三方大文件，默认用 ../vivado_tools/bsdl）
+bsdl/
+
+# Python 遗留（本驱动已改为纯 Tcl）
+__pycache__/
+*.pyc
