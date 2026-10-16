@@ -391,6 +391,7 @@ proc ::jtagid::tkhost::data_from {res} {
     foreach c [dict get $res candidates] {
         lappend cands [dict create models [dict get $c models] model [dict get $c model] \
             siblings [dict get $c siblings] recommended [dict get $c recommended] \
+            bound [expr {[dict exists $c bound] ? [dict get $c bound] : 0}] \
             package [dict get $c package] \
             irl [dict get $c irl] bsr [dict get $c bsr] cells [dict get $c cells] \
             path [dict get $c path] entity [dict get $c entity] file [file tail [dict get $c path]]]
@@ -415,8 +416,27 @@ proc ::jtagid::tkhost::data_from {res} {
             dict set sku $k [::jtagid::tkhost::ascii_only [dict get $info $key]]
         }
     }
+    # the binding made earlier (if any) travels with every payload
+    set bound ""
+    if {[dict exists $info bound_bsdl]} {
+        set bound [dict create idcode [dict get $info bound_idcode] \
+                       device [dict get $info bound_device] \
+                       die [dict get $info die] \
+                       bsdl [dict get $info bound_bsdl] \
+                       when [dict get $info bound_when]]
+        # package: take it from the candidate that was bound
+        foreach c [dict get $res candidates] {
+            if {[string equal -nocase [dict get $c path] [dict get $info bound_bsdl]]} {
+                dict set bound package [dict get $c package]
+            }
+        }
+    }
+    set pkg_note ""
+    if {[dict exists $info package_hint_note]} {
+        set pkg_note [::jtagid::tkhost::ascii_only [dict get $info package_hint_note]]
+    }
     return [dict create env [string trim $env] devices $devices candidates $cands \
-                errors $errors part $part sku $sku \
+                errors $errors part $part sku $sku bound $bound pkg_note $pkg_note \
                 pkg_used [expr {[dict exists $info package_hint_used] ? [dict get $info package_hint_used] : ""}] \
                 selected $::jtagid::tkhost::S(selected)]
 }
@@ -503,6 +523,38 @@ proc ::jtagid::tkhost::cmd_select {args} {
     return $path
 }
 
+proc ::jtagid::tkhost::cmd_bind {args} {
+    # The chooser in the Tk window picked a BSDL: remember device <-> BSDL so
+    # the answer is reusable ("jtagid bsdl-for" prints the path later).
+    variable S
+    set idcode  [lindex $args 0]
+    set device  [lindex $args 1]
+    set part    [lindex $args 2]
+    set die     [lindex $args 3]
+    set package [lindex $args 4]
+    set bsdl    [string map {\\ /} [lindex $args 5]]
+    if {$idcode eq "" || $bsdl eq ""} {
+        ::jtagid::tkhost::note "bind refused: idcode='$idcode' bsdl='$bsdl'"
+        catch {::jtagid::tkhost::send_line \
+            "::jtagid::tkgui::show_error {[::jtagid::tkhost::ascii_only {no FPGA device to bind to - identify first}]}"}
+        return
+    }
+    if {![file exists $bsdl]} {
+        ::jtagid::tkhost::note "bind refused: no such BSDL file: $bsdl"
+        catch {::jtagid::tkhost::send_line \
+            "::jtagid::tkgui::show_error {[::jtagid::tkhost::ascii_only {that BSDL file does not exist any more}]}"}
+        return
+    }
+    if {[catch {set rec [::jtagid::binding_set $idcode $device $part $die $package $bsdl]} err]} {
+        ::jtagid::tkhost::note "bind failed: $err"
+        return
+    }
+    set S(selected) $bsdl
+    ::jtagid::tkhost::note "bound: $idcode ($device) <- $bsdl  (bindings.txt)"
+    catch {::jtagid::tkhost::send_line "::jtagid::tkgui::binding_saved [list $rec]"}
+    return $rec
+}
+
 proc ::jtagid::tkhost::cmd_hide_window {} {
     ::jtagid::tkhost::cmd_window_closed
     return
@@ -583,39 +635,54 @@ proc ::jtagid::tkhost::selftest {} {
     lappend report "SELFTEST|tk_version|[::jtagid::tkhost::query {info patchlevel}]"
     set title [::jtagid::tkhost::query {wm title .g}]
     lappend report "SELFTEST|title|[::jtagid::tkhost::ascii_only $title] ([string length $title] chars)"
-    # give the automatic identify time to arrive
+    # give the automatic identify time to arrive, then look at the chooser,
+    # which is the dialog the whole flow hangs on
     set tries 0
     while {$tries < 60} {
-        set rows [::jtagid::tkhost::query {llength [.g.cand.tv children {}]}]
+        set rows [::jtagid::tkhost::query {llength [.g.pick.cand.tv children {}]}]
         if {$rows ne "" && $rows ne "0" && ![string match "ERR:*" $rows]} { break }
         catch {update}
         after 500
         incr tries
     }
-    lappend report "SELFTEST|candidate_rows|[::jtagid::tkhost::query {llength [.g.cand.tv children {}]}]"
+    lappend report "SELFTEST|chooser_mapped|[::jtagid::tkhost::query {winfo ismapped .g.pick}]"
+    lappend report "SELFTEST|chooser_title|[::jtagid::tkhost::query {wm title .g.pick}]"
+    lappend report "SELFTEST|candidate_rows|[::jtagid::tkhost::query {llength [.g.pick.cand.tv children {}]}]"
     lappend report "SELFTEST|device_rows|[::jtagid::tkhost::query {llength [.g.dev.tv children {}]}]"
-    lappend report "SELFTEST|filters|[::jtagid::tkhost::query {list [.g.cand.f.pkg get] [.g.cand.f.model get]}]"
+    lappend report "SELFTEST|filters|[::jtagid::tkhost::query {list [.g.pick.cand.f.pkg get] [.g.pick.cand.f.model get]}]"
     # filter the table down to SFVC784 through the same code path the combobox uses
-    lappend report "SELFTEST|filter_pkg|[::jtagid::tkhost::query {set ::jtagid::tkgui::S(f_pkg) {}}]"
-    catch {::jtagid::tkhost::send_line {.g.cand.f.pkg set SFVC784; ::jtagid::tkgui::apply_filters}}
+    catch {::jtagid::tkhost::send_line {.g.pick.cand.f.pkg set SFVC784; ::jtagid::tkgui::apply_filters}}
     catch {update}
     after 600
-    lappend report "SELFTEST|rows_after_filter|[::jtagid::tkhost::query {llength [.g.cand.tv children {}]}]"
+    lappend report "SELFTEST|rows_after_filter|[::jtagid::tkhost::query {llength [.g.pick.cand.tv children {}]}]"
     # the model filter must separate sibling SKUs (the whole point of the
-    # per-file model column), and the -part match must be tagged
-    lappend report "SELFTEST|model_choices|[::jtagid::tkhost::query {.g.cand.f.model cget -values}]"
-    catch {::jtagid::tkhost::send_line {.g.cand.f.model set XCZU3EG; ::jtagid::tkgui::apply_filters}}
+    # per-file model column)
+    lappend report "SELFTEST|model_choices|[::jtagid::tkhost::query {.g.pick.cand.f.model cget -values}]"
+    catch {::jtagid::tkhost::send_line {.g.pick.cand.f.model set XCZU3EG; ::jtagid::tkgui::apply_filters}}
     catch {update}
     after 600
-    lappend report "SELFTEST|rows_after_model_filter|[::jtagid::tkhost::query {llength [.g.cand.tv children {}]}]"
-    lappend report "SELFTEST|recommended_tag|[::jtagid::tkhost::query {.g.cand.tv tag has recommended}]"
-    # select the first visible row the way a click would
-    catch {::jtagid::tkhost::send_line {set f [lindex [.g.cand.tv children {}] 0]; .g.cand.tv selection set $f; ::jtagid::tkgui::on_select}}
-    set tries 0
-    while {$tries < 20 && $S(selected) eq ""} { catch {update}; after 300; incr tries }
-    lappend report "SELFTEST|selected_here|$S(selected)"
+    lappend report "SELFTEST|rows_after_model_filter|[::jtagid::tkhost::query {llength [.g.pick.cand.tv children {}]}]"
+    # select the visible row the way a click would, then use it
+    catch {::jtagid::tkhost::send_line {set f [lindex [.g.pick.cand.tv children {}] 0]; .g.pick.cand.tv selection set $f; ::jtagid::tkgui::on_select}}
+    catch {update}
+    after 600
     lappend report "SELFTEST|selected_there|[::jtagid::tkhost::query {set ::jtagid::tkgui::S(selected)}]"
-    lappend report "SELFTEST|details|[::jtagid::tkhost::query {regsub -all {\n} [string range [.g.det get 1.0 end] 0 300] { // }}]"
+    lappend report "SELFTEST|details|[::jtagid::tkhost::query {regsub -all {\n} [string range [.g.pick.det get 1.0 end] 0 200] { // }}]"
+    # also prove the chooser stays closed/opens on demand after a first binding
+    puts "SELFTEST|using the selected BSDL"
+    catch {::jtagid::tkhost::send_line {::jtagid::tkgui::use_selected}}
+    catch {update}
+    after 1200
+    lappend report "SELFTEST|chooser_closed|[expr {[::jtagid::tkhost::query {winfo ismapped .g.pick}] eq "0"}]"
+    lappend report "SELFTEST|binding_entry|[::jtagid::tkhost::query {.g.bd.e get}]"
+    set brec [::jtagid::binding_get 0x14710093]
+    if {$brec eq ""} {
+        lappend report "SELFTEST|binding_stored|NONE"
+        lappend report "SELFTEST|binding_idcode|NONE"
+    } else {
+        lappend report "SELFTEST|binding_stored|[dict get $brec bsdl]"
+        lappend report "SELFTEST|binding_idcode|[dict get $brec idcode]"
+    }
     lappend report "SELFTEST|status|[::jtagid::tkhost::query {.g.st cget -text}]"
     # console must still be free: an idle timer scheduled by start must have run
     lappend report "SELFTEST|idle_loop_after_start|$S(idle)"

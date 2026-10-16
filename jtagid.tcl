@@ -510,6 +510,93 @@ proc ::jtagid::device_records {} {
     return $out
 }
 
+#==============================================================================
+# device <-> BSDL bindings
+#
+# What the GUI writes when you pick a BSDL after identifying: which device (by
+# IDCODE) is described by which BSDL file, so the answer is reusable later:
+#   jtagid bind                       list them
+#   jtagid bind -idcode 0x14710093 -bsdl <path>
+#   jtagid bsdl-for                   print the BSDL bound to the FPGA on the chain
+# File: <cache dir>/bindings.txt, one tab separated record per line.
+#==============================================================================
+
+proc ::jtagid::bindings_file {} {
+    set cache [::jtagid::cache_file]
+    return [file join [file dirname $cache] bindings.txt]
+}
+
+proc ::jtagid::binding_list {} {
+    set out {}
+    set f [::jtagid::bindings_file]
+    if {![file exists $f]} { return $out }
+    if {[catch {open $f r} fh]} { return $out }
+    catch {
+        fconfigure $fh -encoding utf-8
+        while {[gets $fh line] >= 0} {
+            set line [string trimright $line "\r\n"]
+            if {$line eq "" || [string index $line 0] eq "#"} { continue }
+            set p [split $line \t]
+            if {[llength $p] < 6} { continue }
+            lappend out [dict create idcode [lindex $p 0] device [lindex $p 1] \
+                part [lindex $p 2] die [lindex $p 3] package [lindex $p 4] \
+                bsdl [lindex $p 5] when [lindex $p 6]]
+        }
+        close $fh
+    }
+    return $out
+}
+
+proc ::jtagid::binding_write {rows} {
+    set f [::jtagid::bindings_file]
+    catch {file mkdir [file dirname $f]}
+    set tmp "$f.tmp"
+    set fh [open $tmp w]
+    fconfigure $fh -encoding utf-8
+    puts $fh "# jtagid device <-> BSDL bindings"
+    puts $fh "# idcode\tdevice\tpart\tdie\tpackage\tbsdl\twhen"
+    foreach b $rows {
+        puts $fh "[dict get $b idcode]\t[dict get $b device]\t[dict get $b part]\t[dict get $b die]\t[dict get $b package]\t[dict get $b bsdl]\t[dict get $b when]"
+    }
+    close $fh
+    file rename -force $tmp $f
+    return
+}
+
+proc ::jtagid::binding_get {idcode} {
+    set key [string tolower [string trim $idcode]]
+    if {$key eq ""} { return "" }
+    foreach b [::jtagid::binding_list] {
+        if {[string tolower [dict get $b idcode]] eq $key} { return $b }
+    }
+    return ""
+}
+
+proc ::jtagid::binding_set {idcode device part die package bsdl {when ""}} {
+    if {$idcode eq "" || $bsdl eq ""} { return -code error "binding needs an idcode and a BSDL path" }
+    if {$when eq ""} { set when [clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] }
+    set key [string tolower [string trim $idcode]]
+    set out {}
+    foreach b [::jtagid::binding_list] {
+        if {[string tolower [dict get $b idcode]] ne $key} { lappend out $b }
+    }
+    set rec [dict create idcode $idcode device $device part $part die $die \
+                 package $package bsdl [string map {\\ /} $bsdl] when $when]
+    lappend out $rec
+    ::jtagid::binding_write $out
+    return $rec
+}
+
+proc ::jtagid::binding_clear {idcode} {
+    set key [string tolower [string trim $idcode]]
+    set out {}
+    foreach b [::jtagid::binding_list] {
+        if {[string tolower [dict get $b idcode]] ne $key} { lappend out $b }
+    }
+    ::jtagid::binding_write $out
+    return
+}
+
 proc ::jtagid::default_bsdl_dir {} {
     set here [file dirname [file normalize [info script]]]
     foreach cand [list \
@@ -853,10 +940,21 @@ jtagid -- JTAG boundary-scan identification driver for Vivado (pure Tcl)
   jtagid gui-status                 is the window/backend service running?
   jtagid gui-stop                   stop the Tk front end (Vivado keeps running)
 
+  jtagid bind                       list the device <-> BSDL bindings
+  jtagid bind -idcode 0x14710093 -bsdl <path>
+                                    bind a BSDL to a device
+  jtagid bind -idcode 0x14710093 -clear
+                                    forget a binding
+  jtagid bsdl-for ?-idcode X?       print the BSDL bound to a device (scripts)
+
   The GUI is split: the Tk window is the front end, this Vivado session is the
   back end (it owns the cable).  Opening it does not block: the console keeps
   its prompt and the service stays resident until Vivado is closed.  Closing
   the window only hides it - run "jtagid gui" to bring it straight back.
+
+  GUI flow: identify the FPGA, then a chooser opens with every filter, you pick
+  a BSDL, and it is bound to the device (bindings.txt) so the answer is
+  reusable: jtagid bsdl-for  prints the path.
 
 Examples:
   source D:/work2026/ai/opencode/jtag_identify/jtagid.tcl
@@ -1174,6 +1272,14 @@ proc ::jtagid::cmd_identify {args} {
     } else {
         puts "  model       : ambiguous - narrow it with -package <PKG> or -part <partnumber>"
     }
+    # a binding made in the GUI earlier is the answer to "which BSDL for me"
+    set bound [::jtagid::binding_get [lindex $fpga 0]]
+    if {$bound ne ""} {
+        puts "  bound BSDL  : [dict get $bound bsdl]"
+        puts "                (device [dict get $bound device], bound [dict get $bound when]; save it with: jtagid bsdl-for)"
+    } else {
+        puts "  bound BSDL  : none yet - pick one in the GUI (or: jtagid bind -idcode [lindex $fpga 0] -bsdl <path>)"
+    }
     set state(quiet) 0
     return $chosen
 }
@@ -1264,6 +1370,72 @@ proc ::jtagid::cmd_gui {args} {
         return
     }
     return -code error "no GUI file found next to jtagid.tcl ($here)"
+}
+
+proc ::jtagid::cmd_bind {args} {
+    # Remember (or show) which BSDL describes which device.
+    #   jtagid bind                                              list
+    #   jtagid bind -idcode 0x14710093 -bsdl <path>              bind
+    #   jtagid bind -idcode 0x14710093 -clear                    forget
+    # The GUI writes the same records when you pick a BSDL in the chooser.
+    ::jtagid::parse_opts opts $args {-idcode "" -bsdl "" -device "" -part "" \
+                                         -die "" -package "" -clear 0}
+    if {$opts(-idcode) ne "" && $opts(-clear)} {
+        ::jtagid::binding_clear $opts(-idcode)
+        puts "cleared the binding for $opts(-idcode)"
+        return
+    }
+    if {$opts(-idcode) ne "" && $opts(-bsdl) ne ""} {
+        if {![file exists $opts(-bsdl)]} {
+            return -code error "no such BSDL file: $opts(-bsdl)"
+        }
+        set rec [::jtagid::binding_set $opts(-idcode) $opts(-device) $opts(-part) \
+                     $opts(-die) $opts(-package) $opts(-bsdl)]
+        puts "bound: [dict get $rec idcode] ([dict get $rec device]) -> [dict get $rec bsdl]"
+        puts "file  : [::jtagid::bindings_file]"
+        return $rec
+    }
+    set rows [::jtagid::binding_list]
+    if {[llength $rows] == 0} {
+        puts "no bindings yet."
+        puts "  bind one:   jtagid bind -idcode 0x14710093 -bsdl <path>"
+        puts "  or pick one in the GUI (identify -> chooser -> use this BSDL)"
+        return {}
+    }
+    puts "# device <-> BSDL bindings ([llength $rows])"
+    foreach b $rows {
+        puts [format "  %-12s %-12s die=%-6s pkg=%-8s %s" \
+                  [dict get $b idcode] [dict get $b device] [dict get $b die] \
+                  [dict get $b package] [dict get $b bsdl]]
+    }
+    puts "  file: [::jtagid::bindings_file]"
+    return $rows
+}
+
+proc ::jtagid::cmd_bsdl_for {args} {
+    # Print the BSDL bound to a device - script friendly (returns the path).
+    #   jtagid bsdl-for                         the FPGA on the chain
+    #   jtagid bsdl-for -idcode 0x14710093      a specific device
+    ::jtagid::parse_opts opts $args {-idcode ""}
+    set idc [string trim $opts(-idcode)]
+    if {$idc eq ""} {
+        set devs {}
+        if {![catch {::jtagid::connect} e]} { catch {::jtagid::ensure_target}; set devs [::jtagid::device_records] }
+        foreach d $devs {
+            if {[dict get $d fpga] == 1} { set idc [dict get $d idcode]; break }
+        }
+        if {$idc eq ""} {
+            return -code error "no FPGA IDCODE (pass -idcode, or connect the cable)"
+        }
+        puts "# FPGA on the chain: [lindex $devs 0]"
+    }
+    set rec [::jtagid::binding_get $idc]
+    if {$rec eq ""} {
+        return -code error "no BSDL is bound to $idc (bind one: jtagid bind -idcode $idc -bsdl <path>)"
+    }
+    puts "device: [dict get $rec device]  idcode: [dict get $rec idcode]  die: [dict get $rec die]  package: [dict get $rec package]"
+    puts "BSDL  : [dict get $rec bsdl]"
+    return [dict get $rec bsdl]
 }
 
 proc ::jtagid::cmd_gui_status {} {
@@ -1382,6 +1554,15 @@ proc ::jtagid::collect_report {args} {
         dict set res info sku_pl [join [dict get $sku pl] { | }]
         dict set res info sku_how [join [dict get $sku how] { | }]
 
+        # is a BSDL already bound to this device (from an earlier session)?
+        set bound [::jtagid::binding_get $idc]
+        if {$bound ne ""} {
+            dict set res info bound_idcode [dict get $bound idcode]
+            dict set res info bound_device [dict get $bound device]
+            dict set res info bound_bsdl [dict get $bound bsdl]
+            dict set res info bound_when [dict get $bound when]
+        }
+
         set shown 0
         set want_groups $groups
         if {$want_pkg ne ""} {
@@ -1425,12 +1606,15 @@ proc ::jtagid::collect_report {args} {
                 set rec 0
                 if {$part_fam ne "" && \
                     [::jtagid::grade_norm $model] eq [::jtagid::grade_norm $part_fam]} { set rec 1 }
+                set isbound 0
+                if {$bound ne "" && [dict get $bound bsdl] eq $path} { set isbound 1 }
                 dict lappend res candidates [dict create \
                     models $models model $model siblings $sib \
+                    bound $isbound recommended $rec \
                     package [dict get $group package] \
                     irl [dict get $group irl] bsr [dict get $group bsr] \
                     cells [dict get $group cells] path $path \
-                    entity $entity recommended $rec]
+                    entity $entity]
                 incr shown
             }
         }
@@ -1485,7 +1669,7 @@ proc ::jtagid::cmd_report {args} {
         puts "DEV\t[dict get $d name]\t[dict get $d part]\t[dict get $d idcode]\t[dict get $d family]\t[dict get $d array]\t[dict get $d mfg]\t[dict get $d fpga]"
     }
     foreach c [dict get $res candidates] {
-        puts "CAND\t[dict get $c model]\t[dict get $c package]\t[dict get $c irl]\t[dict get $c bsr]\t[dict get $c cells]\t[dict get $c path]\t[dict get $c entity]\t[join [dict get $c siblings] {,}]\t[dict get $c recommended]"
+        puts "CAND\t[dict get $c model]\t[dict get $c package]\t[dict get $c irl]\t[dict get $c bsr]\t[dict get $c cells]\t[dict get $c path]\t[dict get $c entity]\t[join [dict get $c siblings] {,}]\t[dict get $c recommended]\t[dict get $c bound]"
     }
     set info [dict get $res info]
     if {[dict exists $info sku_models]} {
@@ -1510,6 +1694,9 @@ proc ::jtagid::cmd_report {args} {
     if {$part ne ""} {
         puts "PART\t[dict get $part given]\t[dict get $part matched]\t[dict get $part package]\t[dict get $part message]"
     }
+    if {[dict exists $info bound_bsdl]} {
+        puts "BIND\t[dict get $info bound_idcode]\t[dict get $info bound_device]\t[dict get $info die]\t[dict get $info bound_bsdl]\t[dict get $info bound_when]"
+    }
     foreach e [dict get $res errors] { puts "ERR\t$e" }
     puts "REPORT\tEND"
     return
@@ -1528,6 +1715,8 @@ proc ::jtagid::dispatch {sub args} {
         scan - chain         { return [::jtagid::cmd_scan {*}$args] }
         identify - id        { return [::jtagid::cmd_identify {*}$args] }
         report               { return [::jtagid::cmd_report {*}$args] }
+        bind                 { return [::jtagid::cmd_bind {*}$args] }
+        bsdl-for             { return [::jtagid::cmd_bsdl_for {*}$args] }
         gui                  { return [::jtagid::cmd_gui {*}$args] }
         gui-status           { return [::jtagid::cmd_gui_status] }
         gui-stop             { return [::jtagid::cmd_gui_stop] }

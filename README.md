@@ -67,20 +67,36 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 
 | 区域 | 内容 |
 |---|---|
-| 工具栏 | **识别 FPGA 型号** · 扫描链 · 重建索引 · 关闭 · BSDL 目录（带“选择目录”对话框） · 封装提示 · 料号 |
+| 主窗口按钮 | 只有 **识别 FPGA 型号** 和 **关闭**（扫描链 / 重建索引已从界面移除：识别本身就会读链，索引需要时会自动重建；要手动用还有 `jtagid scan` / `jtagid bsdl-index -rebuild`） |
+| 输入 | BSDL 目录（带“选择目录”对话框）· 封装提示 · 料号 —— 三个都会被记住并自动填回 |
 | 链上器件 | 每个 TAP 一行：器件名 / PART / IDCODE / 解码（Xilinx FPGA 会标注） |
-| BSDL 候选 | **封装 / 型号 / 关键字三个过滤器** + 表格（型号 / 封装 / IRL / BSR / cells / 文件）→ **点一行即选定** |
-| 已选定 | 完整路径 · 复制路径 · 打开所在文件夹 · entity/IRL/BSR 详情 |
+| 选择 BSDL 弹窗 | **封装 / 型号 / 关键字三个过滤器** + 候选表（型号/封装/IRL/BSR/cells/文件）+ 详情区（die / 同 IDCODE 型号 / PS 与 PL 差异 / 判定办法）+「使用这份 BSDL」「取消」；双击一行等于直接使用 |
+| 绑定 | 选中一行按「使用这份 BSDL」→ 器件（按 IDCODE）↔ BSDL 写入 `bindings.txt`，主窗口立刻显示，弹窗关闭 |
 
-打开窗口会自动识别一次；选定结果写入 `%LOCALAPPDATA%\jtag_identify\selected_bsdl.txt`。
-三个按钮（识别 / 扫描链 / 重建索引）都走同一条路径：点一下 → 后端执行 → 结果回填表格。
+打开窗口会自动识别一次，识别完**自动弹出选 BSDL 的窗口**（也可随时点主窗口的「选择 BSDL」再打开）。
 任何一步在后端出错，原因都会出现在状态栏并把按钮解锁（不会再出现“点了没反应”）。
+
+**绑定是持久的、以后能直接用**：
+
+```tcl
+jtagid bsdl-for                 ;# 打印/返回这颗 FPGA 绑定的 BSDL 路径（脚本里可直接用）
+jtagid bind                     ;# 列出所有绑定
+jtagid bind -idcode 0x14710093 -bsdl <path>     ;# 手工绑一份
+jtagid identify                 ;# 输出里会多一行  bound BSDL : ...
+```
+
+绑定文件 `%LOCALAPPDATA%\jtagid_identify\bindings.txt`，一行一条、
+`idcode<TAB>device<TAB>part<TAB>die<TAB>package<TAB>bsdl<TAB>when`（ASCII，可直接编辑）。
+重开窗口或重新识别时会自动带出已有绑定，那一行在弹窗里标成「已绑定」并自动选中。
 
 | 命令 | 作用 |
 |---|---|
 | `jtagid gui` | 打开窗口；已经在跑就**恢复**窗口（不重启前端） |
 | `jtagid gui-status` | 端口 / Tk 进程 / 是否连着 / 窗口状态 / 空闲循环是否在服务 |
 | `jtagid gui-stop` | 停前端（Vivado 会话不受影响） |
+  （首行是 BSDL 目录路径，换目录会自动重建；不会写进你的 BSDL 目录）。
+* 器件 ↔ BSDL 绑定：`%LOCALAPPDATA%\jtagid_identify\bindings.txt`
+| `jtagid bsdl-for ?-idcode X?` | 打印/返回绑定的 BSDL 路径（脚本可用；不带 `-idcode` 就用链上那颗 FPGA） |
 
 | 环境变量 | 作用 |
 |---|---|
@@ -113,17 +129,39 @@ NONBLOCK|30s check: alive=0 win=0 idle=1                            <- 前端退
 Vivado 的主循环停摆，整个 IDE 界面都是卡的；现在只在 `::jtagid::tkhost::pump` 里保留一份
 **手动**的阻塞泵，仅给“控制台不服务事件”的会话（如 `-mode tcl`）当兜底。
 
-自检（Vivado 2018.3，`JTAGID_TK_SELFTEST=1`，约 20 秒）：
+自检（Vivado 2018.3，`JTAGID_TK_SELFTEST=1`，约 20 秒；它自己走完 识别 → 弹窗 → 过滤 → 绑定）：
 
 ```
 SELFTEST|backend_resident|1      SELFTEST|idle_loop_alive|1
-SELFTEST|window_exists|1         SELFTEST|tk_version|8.6.8
-SELFTEST|title|jtagid —— 边界扫描识别 FPGA 型号（tk_tunnel 原生窗口）
-SELFTEST|device_rows|2           SELFTEST|candidate_rows|8
-SELFTEST|filters|全部 全部        SELFTEST|rows_after_filter|2
-SELFTEST|selected_here|D:/.../xczu3cg_sfvc784.bsd
-SELFTEST|selected_there|D:/.../xczu3cg_sfvc784.bsd
+SELFTEST|window_exists|1         SELFTEST|ismapped|1     SELFTEST|topmost|0
+SELFTEST|geometry|900x420+510+220                        （主窗口居中）
+SELFTEST|chooser_mapped|1        SELFTEST|chooser_title|选择 BSDL 并与器件绑定
+SELFTEST|device_rows|2           SELFTEST|candidate_rows|2
+SELFTEST|filters|SFVC784 全部
+SELFTEST|rows_after_filter|2     SELFTEST|model_choices|全部 XCZU3CG XCZU3EG
+SELFTEST|rows_after_model_filter|1
+SELFTEST|selected_there|D:/.../xczu3eg_sfvc784.bsd
+SELFTEST|details|硅片 ZU3 // 同 IDCODE 型号 XCZU3CG XCZU3EG // 结论 同一颗硅片 … // PS 侧差异 … // PL 资源 …
+SELFTEST|chooser_closed|1                                （绑定后弹窗自动关闭）
+SELFTEST|binding_entry|D:/.../xczu3eg_sfvc784.bsd        （主窗口显示）
+SELFTEST|binding_stored|D:/.../xczu3eg_sfvc784.bsd       （bindings.txt 已写入）
+SELFTEST|binding_idcode|0x14710093
+SELFTEST|status|已绑定: xczu3_0 (0x14710093, ZU3) -> xczu3eg_sfvc784.bsd (已写入 bindings.txt)
 SELFTEST|idle_loop_after_start|1
+```
+
+绑定复用也是实测的（批处理，`jtagid_test_sku.tcl` 同款命令行）：
+
+```
+$ jtagid bind
+# device <-> BSDL bindings (1)
+  0x14710093   xczu3_0      die=ZU3    pkg=SFVC784  D:/.../xczu3eg_sfvc784.bsd
+$ jtagid bsdl-for
+device: xczu3_0  idcode: 0x14710093  die: ZU3  package: SFVC784
+BSDL  : D:/.../xczu3eg_sfvc784.bsd          <- 返回值，脚本里可直接用
+$ jtagid identify
+  bound BSDL  : D:/.../xczu3eg_sfvc784.bsd
+                (device xczu3_0, bound 2026-10-17 01:08:31; save it with: jtagid bsdl-for)
 ```
 
 “隐藏窗口 → 后端仍在 → 原样恢复”也是实测的（`jtagid_tk_test_resident.tcl`）：
@@ -398,4 +436,6 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 
 * BSDL 索引缓存：`%LOCALAPPDATA%\jtag_identify\bsdl_index_tcl.txt`
   （首行是 BSDL 目录路径，换目录会自动重建；不会写进你的 BSDL 目录）。
+* 器件 ↔ BSDL 绑定：`%LOCALAPPDATA%\jtagid_identify\bindings.txt`
+  （GUI 里按「使用这份 BSDL」时写入；`jtagid bsdl-for` 读它；可直接编辑）。
 * 性能：840 个文件建索引 0.3~1 秒；之后命中缓存瞬时。

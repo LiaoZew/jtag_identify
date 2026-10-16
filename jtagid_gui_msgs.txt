@@ -85,3 +85,16 @@ sku_how_2	2) 看板卡 BOM / 原理图 / 丝印（汽车级 XAZU… 与商用 XC
 sku_how_3	3) PS 跑 Linux 时：有 Mali GPU（设备树 gpu@fd4b0000 / dmesg 里的 mali）→ EG/EV；没有 → CG
 sku_how_4	4) 已知料号就填上面「料号」再点识别，匹配的那一行会高亮为「推荐」
 
+lbl_bound	已绑定的器件 ↔ BSDL
+btn_rechoose	选择 BSDL
+status_bound	已绑定
+status_nobound	尚未绑定 BSDL
+status_saved	已写入 bindings.txt
+status_pick_hint	点一行选中，再按「使用这份 BSDL」完成绑定
+status_pick_row	请先选中一行
+dlg_title	选择 BSDL 并与器件绑定
+btn_use	使用这份 BSDL
+btn_cancel	取消
+lbl_bind_to	绑定到器件
+status_nocand	还没有候选：先点「识别 FPGA 型号」
+tag_bound	已绑定
