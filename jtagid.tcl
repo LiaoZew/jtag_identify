@@ -685,6 +685,117 @@ proc ::jtagid::cmp_package {a b} {
     return [string compare [dict get $a package] [dict get $b package]]
 }
 
+#==============================================================================
+# why two parts with the same IDCODE are still different - and what can tell
+# them apart
+#
+# Measured on this machine (Vivado 2018.3), for XCZU3CG_SFVC784 vs
+# XCZU3EG_SFVC784:
+#   * the two BSDL files are byte identical after renaming the model
+#     (same SHA-256), i.e. IDCODE, IRL, BSR, instruction opcodes, pin map and
+#     boundary register all match -> boundary scan cannot tell them apart
+#   * Vivado's own part database has the same numbers for both
+#     (8820 slices, 70560 LUT, 360 DSP, 216 BRAM, 252 IOB, 3 MMCM) and only the
+#     name/DEVICE differs -> the PL is identical too
+#   * the difference is in the PS: CG has no GPU/VCU, EG has the Mali-400 GPU,
+#     EV adds the VCU.  That is decided when the die is tested and sorted, and
+#     nothing in the JTAG-visible space reports it.
+#
+# So the driver reports the die (which JTAG *can* prove) and then spells out
+# the remaining SKU choice, instead of pretending a single model.
+#==============================================================================
+
+proc ::jtagid::model_of {entity} {
+    # XCZU3EG_SFVC784 -> XCZU3EG
+    return [lindex [split $entity _] 0]
+}
+
+proc ::jtagid::sku_traits {model} {
+    # Trailing letters of a Zynq UltraScale+ MPSoC part.  Product table
+    # knowledge, not something the silicon reports.
+    set m [string toupper $model]
+    if {[regexp {ZU\d+([A-Z]{2})} $m -> suffix]} {
+        switch -- $suffix {
+            CG { return [dict create desc "CG: no GPU, no VCU" ps_gpu 0 ps_vcu 0] }
+            EG { return [dict create desc "EG: Mali-400 GPU (no VCU)" ps_gpu 1 ps_vcu 0] }
+            EV { return [dict create desc "EV: Mali-400 GPU + VCU codec" ps_gpu 1 ps_vcu 1] }
+            default { return [dict create desc "$suffix" ps_gpu ? ps_vcu ?] }
+        }
+    }
+    return [dict create desc "" ps_gpu ? ps_vcu ?]
+}
+
+proc ::jtagid::die_of {models} {
+    # A display label for the die: the common part of the sibling model names
+    # with the grade letter removed (XCZU3CG + XCZU3EG -> ZU3).
+    if {[llength $models] == 0} { return "" }
+    if {[llength $models] == 1} { return [lindex $models 0] }
+    set norm {}
+    foreach m $models { lappend norm [::jtagid::grade_norm [string toupper $m]] }
+    set p [lindex $norm 0]
+    foreach m $norm {
+        set lim [expr {[string length $p] < [string length $m] ? [string length $p] : [string length $m]}]
+        set n 0
+        while {$n < $lim && [string index $p $n] eq [string index $m $n]} { incr n }
+        set p [string range $p 0 [expr {$n - 1}]]
+    }
+    # drop the normalised grade letter and any trailing model letters
+    set p [string map [list ? ""] $p]
+    while {[string length $p] > 0 && [string is alpha [string index $p end]]} {
+        set p [string range $p 0 end-1]
+    }
+    # and the leading XC/XA/XQ/X of the grade
+    regsub {^X[CQA]?} $p {} p
+    return $p
+}
+
+proc ::jtagid::pl_resources {model package} {
+    # Ask Vivado's own part database whether such a part exists and what it
+    # contains.  Returns {} when the part is unknown here.
+    if {[llength [info commands get_parts]] == 0} { return "" }
+    set m [string tolower $model]
+    if {$package ne ""} {
+        set glob "$m-[string tolower $package]-*"
+    } else {
+        set glob "$m-*"
+    }
+    if {[catch {set hits [get_parts -quiet $glob]} err]} { return "" }
+    if {[llength $hits] == 0} { return "" }
+    set p [lindex $hits 0]
+    set out [dict create part $p]
+    foreach {key prop} {slices SLICES lut LUT_ELEMENTS ff FLIPFLOPS dsp DSP \
+                            bram BLOCK_RAMS mmcm MMCM iob AVAILABLE_IOBS} {
+        if {[catch {set v [get_property $prop $p]}]} { set v "?" }
+        dict set out $key $v
+    }
+    return $out
+}
+
+proc ::jtagid::sku_analysis {models package} {
+    # models: every BSDL model whose IDCODE pattern matched (the siblings)
+    set models [lsort -unique $models]
+    set out [dict create models $models decidable [expr {[llength $models] == 1}] \
+                 die [::jtagid::die_of $models] package $package ps {} pl {} how {} note ""]
+    foreach m $models {
+        set t [::jtagid::sku_traits $m]
+        dict lappend out ps "[format %-10s $m] [dict get $t desc]"
+        set r [::jtagid::pl_resources $m $package]
+        if {$r ne ""} {
+            dict lappend out pl "[format %-10s $m] slices=[dict get $r slices] LUT=[dict get $r lut] DSP=[dict get $r dsp] BRAM=[dict get $r bram] MMCM=[dict get $r mmcm]"
+        }
+    }
+    if {[dict get $out decidable]} {
+        dict set out note "only one BSDL model matches this IDCODE"
+        return $out
+    }
+    dict set out note "[llength $models] models share this IDCODE: [join $models {, }]"
+    dict lappend out how "1) the chip itself: read the laser marking (it carries model, speed and temperature, e.g. XCZU3EG-1SFVC784I)"
+    dict lappend out how "2) the board: BOM / schematic / silkscreen part number"
+    dict lappend out how "3) PS side, if Linux runs: a Mali GPU is present only on EG/EV (device tree node gpu@fd4b0000, mali driver in dmesg); no GPU -> CG"
+    dict lappend out how "4) pass what you know: jtagid identify -package <PKG> -part <partnumber>"
+    return $out
+}
+
 proc ::jtagid::group_by_architecture {paths} {
     # group by package + IRL + BSR length + cell count: sibling models such as
     # XCZU3CG/XCZU3EG (same IDCODE, same BSR) merge, different packages stay apart
@@ -928,6 +1039,7 @@ proc ::jtagid::cmd_identify {args} {
     set n [::jtagid::bsdl_index]
     puts "  directory $state(bsdl_dir) ($n files)"
     set chosen ""
+    set chosen_path ""
     foreach idc $fpga {
         set hits [::jtagid::match_idcode $idc]
         if {[llength $hits] == 0} {
@@ -935,40 +1047,99 @@ proc ::jtagid::cmd_identify {args} {
             continue
         }
         set groups [::jtagid::group_by_architecture $hits]
+        set all_models {}
+        set all_pkgs {}
+        foreach g [::jtagid::group_by_architecture $hits] {
+            foreach m [dict get $g models] {
+                if {[lsearch -exact $all_models $m] < 0} { lappend all_models $m }
+            }
+            if {[lsearch -exact $all_pkgs [dict get $g package]] < 0} { lappend all_pkgs [dict get $g package] }
+        }
         if {$opts(-package) ne ""} {
             set filtered {}
             foreach g $groups {
                 if {[string equal -nocase [dict get $g package] $opts(-package)]} { lappend filtered $g }
             }
-            if {[llength $filtered] > 0} { set groups $filtered }
+            if {[llength $filtered] > 0} {
+                set groups $filtered
+            } else {
+                puts "    package $opts(-package): no BSDL here; this IDCODE comes in [join [lsort $all_pkgs] {, }]"
+            }
         }
         puts "  $idc -> [llength $hits] file(s), [llength $groups] package group(s)"
         foreach g $groups {
             puts "    * [join [dict get $g models] /]  package [dict get $g package]  IRL=[dict get $g irl] BSR=[dict get $g bsr] cells=[dict get $g cells]"
             foreach p [dict get $g paths] { puts "        $p" }
         }
-        if {[llength $groups] == 1 && $chosen eq ""} { set chosen [lindex $groups 0] }
+
+        # ---- what JTAG can and cannot decide -------------------------------
+        set sku [::jtagid::sku_analysis $all_models $opts(-package)]
+        puts ""
+        puts "  die          : [dict get $sku die]    (from IDCODE $idc; the die is what boundary scan proves)"
+        puts "  same IDCODE  : [join [dict get $sku models] { }]  ([llength [dict get $sku models]] model(s))"
+        if {[dict get $sku decidable]} {
+            puts "  verdict      : only one model carries this IDCODE - no ambiguity"
+        } else {
+            foreach line [dict get $sku ps] { puts "    PS         : [string trim $line]" }
+            foreach line [dict get $sku pl] { puts "    PL         : [string trim $line]" }
+            puts "  verdict      : these are the SAME die.  The BSDL files are byte identical"
+            puts "                 after renaming the model, and Vivado's part database gives them"
+            puts "                 the same PL resources, so IDCODE/BSDL/boundary scan cannot"
+            puts "                 tell them apart - the SKU is fixed at test/sort time."
+            puts "                 Settle it with:"
+            foreach line [dict get $sku how] { puts "                   - $line" }
+        }
 
         if {$opts(-part) ne ""} {
             set pl [split [string tolower $opts(-part)] -]
-            set fam [lindex $pl 0]
+            set fam [string toupper [lindex $pl 0]]
             set pkg [string toupper [lindex $pl 1]]
             set norm [::jtagid::grade_norm $fam]
             set found ""
-            foreach g $groups {
-                foreach m [dict get $g models] {
-                    if {[::jtagid::grade_norm $m] eq $norm} { set found $m }
-                }
+            foreach m $all_models {
+                if {[::jtagid::grade_norm $m] eq $norm} { set found $m }
             }
-            puts "    your PART: $opts(-part) -> family=$fam package=$pkg"
+            puts "    your PART  : $opts(-part) -> family=$fam package=$pkg"
             if {$found ne ""} {
                 if {[string equal -nocase $fam $found]} {
-                    puts "      matches the BSDL model: $found"
+                    puts "                 matches the BSDL model: $found"
                 } else {
-                    puts "      grade letter differs: $fam corresponds to $found (same silicon/IDCODE)"
+                    puts "                 grade letter differs: $fam corresponds to $found (same silicon/IDCODE)"
                 }
+                if {$pkg ne "" && [lsearch -exact $all_pkgs $pkg] < 0 && [llength $all_pkgs] > 0} {
+                    puts "                 note: package $pkg is not in this BSDL tree ([join [lsort $all_pkgs] {, }])"
+                }
+                puts "                 -> recommended BSDL: the $found file below"
             } else {
-                puts "      no such model in BSDL: automotive/defense part numbers can differ, trust the silicon IDCODE"
+                puts "                 no such model in this BSDL tree; trust the silicon IDCODE"
+                puts "                 (automotive/defense numbers such as XAZU3EG map to XCZU3EG)"
+            }
+        }
+        # prefer the part hint, then a single package, when picking a default
+        if {$chosen eq ""} {
+            set pick ""
+            if {$opts(-part) ne ""} {
+                set pl [split [string tolower $opts(-part)] -]
+                set norm [::jtagid::grade_norm [string toupper [lindex $pl 0]]]
+                set hintpkg [string toupper [lindex $pl 1]]
+                foreach g $groups {
+                    if {$hintpkg ne "" && [string toupper [dict get $g package]] ne $hintpkg} { continue }
+                    foreach p [dict get $g paths] {
+                        if {[::jtagid::grade_norm [::jtagid::model_of [dict get [::jtagid::bsdl_details $p] entity]]] eq $norm} {
+                            set pick $p
+                        }
+                    }
+                }
+            }
+            if {$pick ne ""} {
+                foreach g $groups {
+                    if {[lsearch -exact [dict get $g paths] $pick] >= 0} {
+                        set chosen $g
+                        set chosen_path $pick
+                    }
+                }
+            } elseif {[llength $groups] == 1} {
+                set chosen [lindex $groups 0]
             }
         }
     }
@@ -989,12 +1160,19 @@ proc ::jtagid::cmd_identify {args} {
     }
     if {$chosen ne ""} {
         puts "  model       : [join [dict get $chosen models] /]  package [dict get $chosen package]  (IRL=[dict get $chosen irl], BSR=[dict get $chosen bsr])"
-        puts "  BSDL        : [dict get $chosen primary]"
+        if {$chosen_path ne ""} {
+            puts "  BSDL        : $chosen_path"
+            puts "                (picked because it matches your -part hint)"
+        } else {
+            puts "  BSDL        : [dict get $chosen primary]"
+        }
         if {[llength [dict get $chosen models]] > 1} {
-            puts "                (sibling models share the IDCODE; any of these BSDL files works)"
+            puts "                NOTE: [join [dict get $chosen models] /] are the same die, so any of these"
+            puts "                BSDL files describes this chip electrically; for the exact ordering"
+            puts "                code use the checklist above (chip marking or the PS GPU)."
         }
     } else {
-        puts "  model       : needs a package hint to be unique -> -package <PKG>"
+        puts "  model       : ambiguous - narrow it with -package <PKG> or -part <partnumber>"
     }
     set state(quiet) 0
     return $chosen
@@ -1166,41 +1344,86 @@ proc ::jtagid::collect_report {args} {
     dict set res info bsdl_dir $state(bsdl_dir)
     dict set res info bsdl_files $count
     dict set res info idcode [lindex $fpga 0]
+    # what the caller already knows about the part (board silkscreen / BOM)
+    set want_pkg [string toupper $opts(-package)]
+    set part_fam ""
+    set part_pkg ""
+    if {$opts(-part) ne ""} {
+        set pl [split [string tolower $opts(-part)] -]
+        set part_fam [string toupper [lindex $pl 0]]
+        set part_pkg [string toupper [lindex $pl 1]]
+        dict set res info part_hint $opts(-part)
+    }
+    if {$want_pkg ne ""} { dict set res info package_hint $want_pkg }
     foreach idc $fpga {
         set hits [::jtagid::match_idcode $idc]
         if {[llength $hits] == 0} {
             dict lappend res errors "$idc: no matching BSDL in $state(bsdl_dir)"
             continue
         }
+        # every model and package that shares this IDCODE: JTAG can prove the
+        # die, not the SKU, so the caller has to see the whole sibling set
+        set all_models {}
+        set all_pkgs {}
+        foreach g [::jtagid::group_by_architecture $hits] {
+            foreach m [dict get $g models] {
+                if {[lsearch -exact $all_models $m] < 0} { lappend all_models $m }
+            }
+            if {[lsearch -exact $all_pkgs [dict get $g package]] < 0} { lappend all_pkgs [dict get $g package] }
+        }
+        set sku [::jtagid::sku_analysis $all_models $want_pkg]
+        dict set res info die [dict get $sku die]
+        dict set res info sku_models [join [dict get $sku models] { }]
+        dict set res info sku_packages [join [lsort $all_pkgs] { }]
+        dict set res info sku_decidable [dict get $sku decidable]
+        dict set res info sku_note [dict get $sku note]
+        dict set res info sku_ps [join [dict get $sku ps] { | }]
+        dict set res info sku_pl [join [dict get $sku pl] { | }]
+        dict set res info sku_how [join [dict get $sku how] { | }]
+
+        set shown 0
         foreach group [::jtagid::group_by_architecture $hits] {
+            if {$want_pkg ne "" && [string toupper [dict get $group package]] ne $want_pkg} { continue }
             set models [join [dict get $group models] /]
             foreach path [dict get $group paths] {
+                set entity [dict get [::jtagid::bsdl_details $path] entity]
+                set model [::jtagid::model_of $entity]
+                set sib {}
+                foreach m [dict get $group models] { if {$m ne $model} { lappend sib $m } }
+                set rec 0
+                if {$part_fam ne "" && \
+                    [::jtagid::grade_norm $model] eq [::jtagid::grade_norm $part_fam]} { set rec 1 }
                 dict lappend res candidates [dict create \
-                    models $models package [dict get $group package] \
+                    models $models model $model siblings $sib \
+                    package [dict get $group package] \
                     irl [dict get $group irl] bsr [dict get $group bsr] \
                     cells [dict get $group cells] path $path \
-                    entity [dict get [::jtagid::bsdl_details $path] entity]]
+                    entity $entity recommended $rec]
+                incr shown
             }
         }
+        if {$want_pkg ne "" && $shown == 0} {
+            dict lappend res errors "no BSDL for package $want_pkg; this IDCODE comes in: [join [lsort $all_pkgs] {, }]"
+        }
         if {$opts(-part) ne ""} {
-            set pl [split [string tolower $opts(-part)] -]
-            set fam [lindex $pl 0]
-            set norm [::jtagid::grade_norm $fam]
+            set norm [::jtagid::grade_norm $part_fam]
             set found ""
-            foreach group [::jtagid::group_by_architecture $hits] {
-                foreach m [dict get $group models] {
-                    if {[::jtagid::grade_norm $m] eq $norm} { set found $m }
-                }
+            foreach m $all_models {
+                if {[::jtagid::grade_norm $m] eq $norm} { set found $m }
+            }
+            set extra ""
+            if {$part_pkg ne "" && [lsearch -exact $all_pkgs $part_pkg] < 0 && [llength $all_pkgs] > 0} {
+                set extra " (package $part_pkg is not in this BSDL tree: [join [lsort $all_pkgs] {, }])"
             }
             if {$found eq ""} {
-                dict set res part [dict create given $opts(-part) matched "" \
-                    message "no such model in BSDL; trust the silicon IDCODE"]
-            } elseif {[string equal -nocase $fam $found]} {
-                dict set res part [dict create given $opts(-part) matched $found \
-                    message "matches the BSDL model"]
+                dict set res part [dict create given $opts(-part) matched "" package $part_pkg \
+                    message "no such model in this BSDL tree; trust the silicon IDCODE$extra"]
+            } elseif {[string equal -nocase $part_fam $found]} {
+                dict set res part [dict create given $opts(-part) matched $found package $part_pkg \
+                    message "matches the BSDL model$extra"]
             } else {
-                dict set res part [dict create given $opts(-part) matched $found \
-                    message "grade letter differs (same silicon/IDCODE)"]
+                dict set res part [dict create given $opts(-part) matched $found package $part_pkg \
+                    message "grade letter differs (same silicon/IDCODE)$extra"]
             }
         }
     }
@@ -1212,9 +1435,19 @@ proc ::jtagid::cmd_report {args} {
     # Machine readable output (tab separated, ASCII) for scripts and the GUI:
     #   REPORT<TAB>BEGIN|END
     #   INFO<TAB>key<TAB>value
+    #     keys now include: die, sku_models, sku_packages, sku_decidable,
+    #     sku_note, sku_ps, sku_pl, sku_how, package_hint, part_hint
     #   DEV<TAB>name<TAB>part<TAB>idcode<TAB>family<TAB>array<TAB>mfg<TAB>is_fpga
-    #   CAND<TAB>models<TAB>package<TAB>irl<TAB>bsr<TAB>cells<TAB>path<TAB>entity
-    #   PART<TAB>given<TAB>matched<TAB>message
+    #   CAND<TAB>model<TAB>package<TAB>irl<TAB>bsr<TAB>cells<TAB>path<TAB>entity
+    #        <TAB>siblings<TAB>recommended
+    #     model       : this file's own model (XCZU3EG), not the merged group label
+    #     siblings    : other models with the same IDCODE (XCZU3CG)
+    #     recommended : 1 when -part names this model
+    #   SKU<TAB>die<TAB>decidable<TAB>models
+    #   SKU-PS<TAB>text        one line per model: what differs in the PS
+    #   SKU-PL<TAB>text        one line per model: PL resources from Vivado's DB
+    #   SKU-HOW<TAB>step       one line per step: how to settle the SKU by hand
+    #   PART<TAB>given<TAB>matched<TAB>package<TAB>message
     #   ERR<TAB>message
     set res [::jtagid::collect_report {*}$args]
     puts "REPORT\tBEGIN"
@@ -1223,11 +1456,30 @@ proc ::jtagid::cmd_report {args} {
         puts "DEV\t[dict get $d name]\t[dict get $d part]\t[dict get $d idcode]\t[dict get $d family]\t[dict get $d array]\t[dict get $d mfg]\t[dict get $d fpga]"
     }
     foreach c [dict get $res candidates] {
-        puts "CAND\t[dict get $c models]\t[dict get $c package]\t[dict get $c irl]\t[dict get $c bsr]\t[dict get $c cells]\t[dict get $c path]\t[dict get $c entity]"
+        puts "CAND\t[dict get $c model]\t[dict get $c package]\t[dict get $c irl]\t[dict get $c bsr]\t[dict get $c cells]\t[dict get $c path]\t[dict get $c entity]\t[join [dict get $c siblings] {,}]\t[dict get $c recommended]"
+    }
+    set info [dict get $res info]
+    if {[dict exists $info sku_models]} {
+        puts "SKU\t[dict get $info die]\t[dict get $info sku_decidable]\t[dict get $info sku_models]"
+        foreach key {sku_ps sku_pl} {
+            if {[dict exists $info $key]} {
+                # the driver joins the lines with " | " - split on that single
+                # character only (splitting on a character set would cut
+                # "no GPU, no VCU" into words)
+                foreach line [split [dict get $info $key] |] {
+                    if {[string trim $line] ne ""} { puts "SKU-[string toupper [string range $key 4 end]]\t[string trim $line]" }
+                }
+            }
+        }
+        if {[dict exists $info sku_how]} {
+            foreach step [split [dict get $info sku_how] |] {
+                if {[string trim $step] ne ""} { puts "SKU-HOW\t[string trim $step]" }
+            }
+        }
     }
     set part [dict get $res part]
     if {$part ne ""} {
-        puts "PART\t[dict get $part given]\t[dict get $part matched]\t[dict get $part message]"
+        puts "PART\t[dict get $part given]\t[dict get $part matched]\t[dict get $part package]\t[dict get $part message]"
     }
     foreach e [dict get $res errors] { puts "ERR\t$e" }
     puts "REPORT\tEND"

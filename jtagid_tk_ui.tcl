@@ -26,6 +26,7 @@ namespace eval ::jtagid::tkgui {
         busy       0
         ready      0
         watchdog   ""
+        sku        {}
         f_pkg      ""
         f_model    ""
         f_text     ""
@@ -222,15 +223,17 @@ proc ::jtagid::tkgui::build {} {
     bind $H(fmodel) <<ComboboxSelected>> {::jtagid::tkgui::apply_filters}
     bind $H(ftext) <KeyRelease> {::jtagid::tkgui::apply_filters}
 
-    set H(candtv) [ttk::treeview $cand.tv -columns {models package irl bsr cells file} \
+    set H(candtv) [ttk::treeview $cand.tv -columns {model package irl bsr cells file} \
                        -show headings -selectmode browse -height 9]
-    foreach {c width} {models 170 package 100 irl 60 bsr 60 cells 70 file 380} {
+    foreach {c width} {model 170 package 100 irl 60 bsr 60 cells 70 file 380} {
         $H(candtv) heading $c -text [::jtagid::tkgui::L col_$c $c]
         $H(candtv) column $c -width $width -anchor w
     }
     $H(candtv) column irl -anchor center
     $H(candtv) column bsr -anchor center
     $H(candtv) column cells -anchor center
+    # rows whose model matches the -part hint are highlighted and carry a star
+    catch {$H(candtv) tag configure recommended -background "#fff3cd"}
     set sb [ttk::scrollbar $cand.sb -orient vertical -command "$H(candtv) yview"]
     $H(candtv) configure -yscrollcommand "$sb set"
     grid $H(candtv) -row 1 -column 0 -sticky nsew -padx 4 -pady 4
@@ -251,7 +254,7 @@ proc ::jtagid::tkgui::build {} {
     grid $sel.b2 -row 0 -column 3 -padx 2
     grid columnconfigure $sel 1 -weight 1
 
-    set H(details) [text $w.det -height 6 -wrap none -state disabled -font TkFixedFont]
+    set H(details) [text $w.det -height 12 -wrap none -state disabled -font TkFixedFont]
     grid $H(details) -row 4 -column 0 -sticky nsew -padx 8 -pady {0 4}
 
     set H(env) [ttk::label $w.env -text "" -anchor w]
@@ -332,6 +335,7 @@ proc ::jtagid::tkgui::render_raw {} {
     ::jtagid::tkgui::fill_filters
     ::jtagid::tkgui::apply_filters
     ::jtagid::tkgui::set_busy 0
+    set S(sku) [::jtagid::tkgui::dget $data sku {}]
     set errors [::jtagid::tkgui::dget $data errors {}]
     if {[llength $errors] > 0} {
         ::jtagid::tkgui::set_status "[::jtagid::tkgui::L status_failed {failed}]: [join $errors { | }]" error
@@ -341,8 +345,16 @@ proc ::jtagid::tkgui::render_raw {} {
         if {$part ne ""} {
             append msg "  |  [::jtagid::tkgui::dget $part given] -> [::jtagid::tkgui::dget $part matched] ([::jtagid::tkgui::dget $part message])"
         }
+        set die [::jtagid::tkgui::dget $S(sku) die]
+        set dec [::jtagid::tkgui::dget $S(sku) decidable]
+        if {$die ne "" && $dec eq "0"} {
+            # say it up front: identical silicon, the SKU needs board evidence
+            append msg "  |  [format [::jtagid::tkgui::L status_same_die {die %s: these models share one IDCODE - the SKU needs the chip marking (see details)}] $die]"
+        }
         ::jtagid::tkgui::set_status $msg ok
     }
+    ::jtagid::tkgui::save_hints
+    ::jtagid::tkgui::show_details_for_selected
     return
 }
 
@@ -356,11 +368,20 @@ proc ::jtagid::tkgui::norm_cand {c} {
     set path [::jtagid::tkgui::dget $c path]
     set file [::jtagid::tkgui::dget $c file]
     if {$file eq ""} { set file [file tail $path] }
+    set model [::jtagid::tkgui::dget $c model]
+    if {$model eq ""} {
+        # fall back to the head of the entity (XCZU3EG_SFVC784 -> XCZU3EG)
+        set model [lindex [split [::jtagid::tkgui::dget $c entity] _] 0]
+    }
+    if {$model eq ""} { set model [::jtagid::tkgui::dget $c models] }
     return [dict create \
         path    $path \
         file    $file \
-        entity  [::jtagid::tkgui::dget $c entity] \
+        model   $model \
         models  [::jtagid::tkgui::dget $c models] \
+        siblings [::jtagid::tkgui::dget $c siblings] \
+        recommended [::jtagid::tkgui::dget $c recommended 0] \
+        entity  [::jtagid::tkgui::dget $c entity] \
         package [::jtagid::tkgui::dget $c package] \
         irl     [::jtagid::tkgui::dget $c irl] \
         bsr     [::jtagid::tkgui::dget $c bsr] \
@@ -373,10 +394,12 @@ proc ::jtagid::tkgui::fill_filters {} {
     set pkgs {}
     set models {}
     foreach c $S(candidates) {
-        if {[lsearch -exact $pkgs [dict get $c package]] < 0} { lappend pkgs [dict get $c package] }
-        foreach m [split [dict get $c models] /] {
-            if {[lsearch -exact $models $m] < 0} { lappend models $m }
-        }
+        set p [dict get $c package]
+        if {[lsearch -exact $pkgs $p] < 0} { lappend pkgs $p }
+        # one entry per real model (XCZU3CG / XCZU3EG), NOT the merged group
+        # label, otherwise the model filter cannot separate sibling SKUs
+        set m [dict get $c model]
+        if {$m ne "" && [lsearch -exact $models $m] < 0} { lappend models $m }
     }
     set all [::jtagid::tkgui::L all {All}]
     $H(fpkg) configure -values [concat [list $all] [lsort $pkgs]]
@@ -411,20 +434,23 @@ proc ::jtagid::tkgui::apply_filters {} {
     set text [string tolower [string trim [$H(ftext) get]]]
     $H(candtv) delete [$H(candtv) children {}]
     set shown 0
+    set star [::jtagid::tkgui::L tag_recommended {recommended}]
     foreach c $S(candidates) {
         if {$pkg ne "" && $pkg ne $all && [string equal -nocase [dict get $c package] $pkg] == 0} { continue }
         if {$model ne "" && $model ne $all} {
-            set hit 0
-            foreach m [split [dict get $c models] /] {
-                if {[string equal -nocase $m $model]} { set hit 1 }
-            }
-            if {!$hit} { continue }
+            if {[string equal -nocase [dict get $c model] $model] == 0} { continue }
         }
         if {$text ne ""} {
-            set hay [string tolower "[dict get $c path] [dict get $c entity] [dict get $c models] [dict get $c package]"]
+            set hay [string tolower "[dict get $c path] [dict get $c entity] [dict get $c model] [dict get $c models] [dict get $c package]"]
             if {[string first $text $hay] < 0} { continue }
         }
-        $H(candtv) insert {} end -id [dict get $c path] -values [list [dict get $c models] \
+        set label [dict get $c model]
+        set tags {}
+        if {[dict get $c recommended] eq "1"} {
+            set label "$label  \[$star\]"
+            set tags [list recommended]
+        }
+        $H(candtv) insert {} end -id [dict get $c path] -tags $tags -values [list $label \
             [dict get $c package] [dict get $c irl] [dict get $c bsr] [dict get $c cells] \
             [dict get $c file]]
         if {[dict get $c path] eq $S(selected)} {
@@ -484,17 +510,116 @@ proc ::jtagid::tkgui::do_choose_dir {} {
     return
 }
 
+proc ::jtagid::tkgui::line {key default value} {
+    variable H
+    if {![winfo exists $H(details)]} { return }
+    $H(details) insert end [format "%-12s: %s\n" [::jtagid::tkgui::L $key $default] $value]
+    return
+}
+
 proc ::jtagid::tkgui::show_details {c} {
+    variable S
     variable H
     $H(details) configure -state normal
     $H(details) delete 1.0 end
-    $H(details) insert end "entity   : [dict get $c entity]\n"
-    $H(details) insert end "model    : [dict get $c models]\n"
-    $H(details) insert end "package  : [dict get $c package]\n"
-    $H(details) insert end "IRL      : [dict get $c irl] bit\n"
-    $H(details) insert end "BSR      : [dict get $c bsr] cells\n"
-    $H(details) insert end "file     : [dict get $c path]\n"
+    set sku $S(sku)
+    set die [::jtagid::tkgui::dget $sku die]
+    set dec [::jtagid::tkgui::dget $sku decidable]
+    if {$die ne ""} {
+        # what JTAG proved (the die) vs what it cannot prove (the ordering code)
+        ::jtagid::tkgui::line sku_line_die {die (from IDCODE)} $die
+        ::jtagid::tkgui::line sku_line_models {same IDCODE} [::jtagid::tkgui::dget $sku models]
+        if {$dec eq "0"} {
+            ::jtagid::tkgui::line sku_line_same {verdict} \
+                [::jtagid::tkgui::L sku_same_die {identical silicon: boundary scan cannot tell these models apart}]
+        } else {
+            ::jtagid::tkgui::line sku_line_same {verdict} \
+                [::jtagid::tkgui::L sku_single {only one model carries this IDCODE}]
+        }
+        foreach key {ps pl} {
+            set text [::jtagid::tkgui::dget $sku $key]
+            if {$text eq ""} { continue }
+            set first 1
+            foreach part [split $text |] {
+                if {[string trim $part] eq ""} { continue }
+                if {$first} {
+                    ::jtagid::tkgui::line "sku_line_$key" $key [string trim $part]
+                    set first 0
+                } else {
+                    $H(details) insert end [format "%-12s  %s\n" "" [string trim $part]]
+                }
+            }
+        }
+    }
+    ::jtagid::tkgui::line sku_line_this {this row} [dict get $c model]
+    if {[llength [dict get $c siblings]] > 0} {
+        ::jtagid::tkgui::line sku_line_sib {siblings} [join [dict get $c siblings] { }]
+    }
+    ::jtagid::tkgui::line col_package {package} [dict get $c package]
+    ::jtagid::tkgui::line col_irl {IRL} "[dict get $c irl] bit"
+    ::jtagid::tkgui::line col_bsr {BSR} "[dict get $c bsr] cells"
+    ::jtagid::tkgui::line sku_line_entity {entity} [dict get $c entity]
+    ::jtagid::tkgui::line col_file {file} [dict get $c path]
+    if {$die ne "" && $dec eq "0"} {
+        $H(details) insert end "\n[::jtagid::tkgui::L sku_how_title {how to settle the SKU}]\n"
+        foreach i {1 2 3 4} {
+            $H(details) insert end "  [::jtagid::tkgui::L sku_how_$i {}]\n"
+        }
+    }
     $H(details) configure -state disabled
+    return
+}
+
+proc ::jtagid::tkgui::show_details_for_selected {} {
+    variable S
+    variable H
+    set sel [$H(candtv) selection]
+    if {[llength $sel] == 0} { return }
+    set path [lindex $sel 0]
+    foreach c $S(candidates) {
+        if {[dict get $c path] eq $path} { ::jtagid::tkgui::show_details $c; return }
+    }
+    return
+}
+
+#==============================================================================
+# remember what the user already knows (package / part / BSDL dir)
+#==============================================================================
+
+proc ::jtagid::tkgui::hint_file {} {
+    return [file join $::env(LOCALAPPDATA) jtag_identify gui_hints.txt]
+}
+
+proc ::jtagid::tkgui::save_hints {} {
+    variable H
+    set f [::jtagid::tkgui::hint_file]
+    catch {file mkdir [file dirname $f]}
+    if {[catch {open $f w} fh]} { return }
+    catch {
+        fconfigure $fh -encoding utf-8
+        puts $fh [string trim [$H(pkg) get]]
+        puts $fh [string trim [$H(part) get]]
+        puts $fh [string trim [$H(dir) get]]
+        close $fh
+    }
+    return
+}
+
+proc ::jtagid::tkgui::load_hints {} {
+    variable H
+    set f [::jtagid::tkgui::hint_file]
+    if {![file exists $f]} { return }
+    if {[catch {open $f r} fh]} { return }
+    set lines {}
+    catch {
+        fconfigure $fh -encoding utf-8
+        while {[gets $fh line] >= 0} { lappend lines [string trimright $line "\r\n"] }
+        close $fh
+    }
+    foreach {w v} [list $H(pkg) [lindex $lines 0] $H(part) [lindex $lines 1] $H(dir) [lindex $lines 2]] {
+        if {$v eq ""} { continue }
+        catch {$w delete 0 end; $w insert 0 $v}
+    }
     return
 }
 
@@ -555,6 +680,7 @@ proc ::jtagid::tkgui::do_quit_app {} {
 
 ::jtagid::tkgui::load_msgs
 ::jtagid::tkgui::build
+::jtagid::tkgui::load_hints
 catch {bind .g <Control-q> {::jtagid::tkgui::quit_app}}
 ::jtagid::tkgui::set_status \
     [::jtagid::tkgui::L status_waiting {talking to the Vivado backend...}] busy

@@ -8,7 +8,7 @@ btn_bsdl_dir	选择 BSDL 目录
 btn_clear	清除过滤
 btn_copy	复制路径
 btn_open	打开所在文件夹
-lbl_part	料号(可选)
+lbl_part	料号(可选，如 xazu3eg-sfvc784-1-i)
 lbl_bsdl_dir	BSDL 目录
 lbl_chain	链上器件（JTAG 链上的所有 TAP）
 lbl_candidates	BSDL 候选（按封装/型号/关键字过滤后，选中要用的那一份）
@@ -64,4 +64,23 @@ status_copied	路径已复制到剪贴板
 status_waiting	正在连接 Vivado 后端…
 status_backend_ok	Vivado 后端已就绪，正在自动识别…
 status_nobackend	Vivado 没有响应：请在 Vivado IDE 的 Tcl Console 里 source 本文件（-mode tcl 的纯 Tcl 窗口不会响应界面）
+# —— SKU 区分（同一颗硅片、同 IDCODE 的不同型号）——
+col_model	型号
+tag_recommended	推荐
+status_same_die	硅片 %s：这些型号共用同一个 IDCODE，具体 SKU 要看芯片丝印（见详情）
+sku_line_die	硅片
+sku_line_models	同 IDCODE 型号
+sku_line_same	结论
+sku_same_die	同一颗硅片：边界扫描（IDCODE/BSDL/BSR）无法区分这几个型号
+sku_single	只有这一个型号使用该 IDCODE
+sku_line_ps	PS 侧差异
+sku_line_pl	PL 资源
+sku_line_this	本行型号
+sku_line_sib	同硅片候选
+sku_line_entity	实体名
+sku_how_title	如何最终确定这个 SKU
+sku_how_1	1) 看芯片丝印：型号/速度/温度都有，例如 XCZU3EG-1SFVC784I
+sku_how_2	2) 看板卡 BOM / 原理图 / 丝印（汽车级 XAZU… 与商用 XCZU… 同硅片）
+sku_how_3	3) PS 跑 Linux 时：有 Mali GPU（设备树 gpu@fd4b0000 / dmesg 里的 mali）→ EG/EV；没有 → CG
+sku_how_4	4) 已知料号就填上面「料号」再点识别，匹配的那一行会高亮为「推荐」
 

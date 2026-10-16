@@ -389,7 +389,9 @@ proc ::jtagid::tkhost::data_from {res} {
     }
     set cands [list]
     foreach c [dict get $res candidates] {
-        lappend cands [dict create models [dict get $c models] package [dict get $c package] \
+        lappend cands [dict create models [dict get $c models] model [dict get $c model] \
+            siblings [dict get $c siblings] recommended [dict get $c recommended] \
+            package [dict get $c package] \
             irl [dict get $c irl] bsr [dict get $c bsr] cells [dict get $c cells] \
             path [dict get $c path] entity [dict get $c entity] file [file tail [dict get $c path]]]
     }
@@ -399,15 +401,22 @@ proc ::jtagid::tkhost::data_from {res} {
     if {[dict get $res part] ne ""} {
         set p [dict get $res part]
         set part [dict create given [dict get $p given] matched [dict get $p matched] \
-            message [dict get $p message]]
+            package [dict get $p package] message [dict get $p message]]
     }
     set info [dict get $res info]
     set env ""
     foreach key {vivado url bsdl_dir bsdl_files} {
         if {[dict exists $info $key]} { append env "$key=[dict get $info $key]   " }
     }
+    set sku [dict create die "" models "" packages "" decidable "" note "" ps "" pl "" how ""]
+    foreach key {die sku_models sku_packages sku_decidable sku_note sku_ps sku_pl sku_how} {
+        if {[dict exists $info $key]} {
+            set k [string map {sku_ ""} $key]
+            dict set sku $k [::jtagid::tkhost::ascii_only [dict get $info $key]]
+        }
+    }
     return [dict create env [string trim $env] devices $devices candidates $cands \
-                errors $errors part $part selected $::jtagid::tkhost::S(selected)]
+                errors $errors part $part sku $sku selected $::jtagid::tkhost::S(selected)]
 }
 
 proc ::jtagid::tkhost::cmd_identify {args} {
@@ -418,7 +427,7 @@ proc ::jtagid::tkhost::cmd_identify {args} {
     ::jtagid::tkhost::note "identify: dir='$dir' package='$pkg' part='$part'"
     set res ""
     if {[catch {
-        set res [::jtagid::collect_report -bsdl-dir $dir -part $part]
+        set res [::jtagid::collect_report -bsdl-dir $dir -package $pkg -part $part]
     } err]} {
         ::jtagid::tkhost::note "identify failed: $err"
         ::jtagid::tkhost::push [dict create env "" devices [list] candidates [list] \
@@ -429,7 +438,7 @@ proc ::jtagid::tkhost::cmd_identify {args} {
     set S(devices) [dict get $res devices]
     set S(candidates) [dict get $res candidates]
     ::jtagid::tkhost::push $data
-    ::jtagid::tkhost::note "identify done: [llength [dict get $res candidates]] candidate(s)"
+    ::jtagid::tkhost::note "identify done: [llength [dict get $res candidates]] candidate(s), die [dict get [dict get $res info] die]"
     return
 }
 
@@ -586,12 +595,22 @@ proc ::jtagid::tkhost::selftest {} {
     catch {update}
     after 600
     lappend report "SELFTEST|rows_after_filter|[::jtagid::tkhost::query {llength [.g.cand.tv children {}]}]"
+    # the model filter must separate sibling SKUs (the whole point of the
+    # per-file model column), and the -part match must be tagged
+    lappend report "SELFTEST|model_choices|[::jtagid::tkhost::query {.g.cand.f.model cget -values}]"
+    catch {::jtagid::tkhost::send_line {.g.cand.f.model set XCZU3EG; ::jtagid::tkgui::apply_filters}}
+    catch {update}
+    after 600
+    lappend report "SELFTEST|rows_after_model_filter|[::jtagid::tkhost::query {llength [.g.cand.tv children {}]}]"
+    lappend report "SELFTEST|recommended_tag|[::jtagid::tkhost::query {.g.cand.tv tag has recommended}]"
     # select the first visible row the way a click would
     catch {::jtagid::tkhost::send_line {set f [lindex [.g.cand.tv children {}] 0]; .g.cand.tv selection set $f; ::jtagid::tkgui::on_select}}
     set tries 0
     while {$tries < 20 && $S(selected) eq ""} { catch {update}; after 300; incr tries }
     lappend report "SELFTEST|selected_here|$S(selected)"
     lappend report "SELFTEST|selected_there|[::jtagid::tkhost::query {set ::jtagid::tkgui::S(selected)}]"
+    lappend report "SELFTEST|details|[::jtagid::tkhost::query {regsub -all {\n} [string range [.g.det get 1.0 end] 0 300] { // }}]"
+    lappend report "SELFTEST|status|[::jtagid::tkhost::query {.g.st cget -text}]"
     # console must still be free: an idle timer scheduled by start must have run
     lappend report "SELFTEST|idle_loop_after_start|$S(idle)"
     catch {::jtagid::tkhost::send_line {::jtagid::tkgui::quit_app}}

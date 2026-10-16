@@ -190,12 +190,12 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_vivado_gui.tcl
 | `jtagid status` | 当前连接 / BSDL 目录 / 索引缓存 / 自起服务状态 |
 | `jtagid open ?-url tcp::3121? ?-own-server 0\|1?` | 打开硬件管理器并连接 hw_server（自动兼容版本） |
 | `jtagid scan ?-refresh?` | 扫描链，列出每个 TAP：器件名 / PART / IDCODE / 解码 |
-| `jtagid identify ?-package SFVC784? ?-part xazu3eg-sfvc784-1-i?` | **识别型号**：IDCODE → BSDL 反查 → 型号/封装/IRL/BSR，并与 Vivado 的 PART 交叉验证 |
+| `jtagid identify ?-package SFVC784? ?-part xazu3eg-sfvc784-1-i?` | **识别型号**：IDCODE → BSDL 反查 → 型号/封装/IRL/BSR，并与 Vivado 的 PART 交叉验证。`-package` 现在**真的会过滤候选**；`-part` 按等级字母归一化匹配（`xazu3eg→XCZU3EG`）并给出推荐的那份 BSDL；同一 IDCODE 的多个型号会列出 die、PS/PL 差异和最终判定办法 |
 | `jtagid close ?-shutdown-own?` | 断开；`-shutdown-own` 结束"本会话启动的" hw_server |
 | `jtagid bsdl-dir ?目录?` | 查看/设置 BSDL 目录（默认自动找 `./bsdl`，再找 `../vivado_tools/bsdl`） |
 | `jtagid bsdl-index ?-rebuild?` | 建立/刷新 BSDL 索引（840 个文件约 0.3~1 秒，落盘缓存，第二次瞬时） |
 | `jtagid bsdl-match 0x14710093` | 只用 IDCODE 反查 BSDL，**不碰硬件** |
-| `jtagid report ?-bsdl-dir D? ?-part P?` | 机器可读输出（制表符分隔，ASCII）：`INFO/DEV/CAND/PART/ERR` 行，供脚本与 GUI 使用 |
+| `jtagid report ?-bsdl-dir D? ?-part P? ?-package P?` | 机器可读输出（制表符分隔，ASCII）：`INFO/DEV/CAND/PART/ERR`；`CAND` 每行是**一个文件自己的型号**并带 `siblings`（同 IDCODE 的兄弟型号）与 `recommended`（`-part` 命中），另有 `SKU / SKU-PS / SKU-PL / SKU-HOW` 行解释同硅片型号怎么区分 |
 | `jtagid gui` | 打开 tk_tunnel 的 Tk 窗口（前端）；已在跑则恢复窗口 |
 | `jtagid gui-status` | 前端/后端服务状态（端口、Tk 进程、是否连着、窗口、空闲循环） |
 | `jtagid gui-stop` | 停掉 Tk 前端（Vivado 会话不受影响） |
@@ -231,6 +231,53 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
   `xazu3teg_sfvc784.bsd`（XAZU3TEG，IDCODE `0x04AF2093`、BSR=1227），**与本板硅片不符**，
   反查不会命中 —— 以硅片 IDCODE 为准。
 * 未配置器件时 Vivado 的 `PART` 只到家族级（`xczu3`），完整 PART 要等器件配置后才读得到。
+
+### 为什么 XCZU3CG / XCZU3EG 区分不了 —— 以及到底怎么最终确定
+
+结论先说：**这两个型号是同一颗硅片，JTAG/边界扫描在物理上就分不开**，不是驱动没做。
+本机实测（Vivado 2018.3）两条独立证据：
+
+| 证据 | 实测结果 |
+|---|---|
+| 两份 BSDL 逐字节比对 | `xczu3cg_sfvc784.bsd` 与 `xczu3eg_sfvc784.bsd` 都是 118210 字节 / 2997 行，只有 44 行不同，而且**全是型号名替换**；把 `XCZU3CG`、`XCZU3EG` 都替换成 `MODEL` 后 **SHA-256 完全相同** → IDCODE、IRL、BSR、指令码、引脚表、边界寄存器全都一致 |
+| Vivado 自己的器件库 | `xczu3cg-sfvc784-1-e` 与 `xczu3eg-sfvc784-1-e` 的属性**除 `DEVICE`/名字外逐项相同**：8820 slices、70560 LUT、141120 FF、360 DSP、216 BRAM、252 IOB、3 MMCM、0 GT、同一封装/同一温度范围 |
+| 硬件侧 | 未配置时 Vivado 只报家族级 `PART=xczu3`；IDCODE 只编码到 die（family=35 array=272）这一级 |
+
+所以差别只在 **PS**：`CG` 没有 GPU/VCU，`EG` 带 Mali-400 GPU（`EV` 再加 VCU）——这是出厂测试分档的结果，
+硅片里没有任何可读字段记录它（IDCODE 与配置寄存器都只到 die 一级）。
+
+**驱动现在会把这件事讲清楚**，而不是含糊地写 "XCZU3CG/XCZU3EG"（`jtagid identify` 实测输出）：
+
+```
+  die          : ZU3    (from IDCODE 0x14710093; the die is what boundary scan proves)
+  same IDCODE  : XCZU3CG XCZU3EG  (2 model(s))
+    PS         : XCZU3CG    CG: no GPU, no VCU
+    PS         : XCZU3EG    EG: Mali-400 GPU (no VCU)
+    PL         : XCZU3CG    slices=8820 LUT=70560 DSP=360 BRAM=216 MMCM=3
+    PL         : XCZU3EG    slices=8820 LUT=70560 DSP=360 BRAM=216 MMCM=3
+  verdict      : these are the SAME die. ... boundary scan cannot tell them apart
+```
+
+**最终确定 SKU 的四条路（按可靠度排序）** —— 窗口详情区里也写着这四条：
+
+1. **看芯片丝印**（最直接）：丝印就是完整订货号，例如 `XCZU3EG-1SFVC784I`，型号/速度/温度/封装一次全有。
+2. **看板卡 BOM / 原理图 / 丝印**：汽车级 `XAZU…`、军工 `XQZU…` 与商用 `XCZU…` 是同一颗硅片，只差等级字母
+   （驱动会做等级归一化：`xazu3eg-sfvc784-1-i` → `XCZU3EG`）。
+3. **PS 侧跑着 Linux 时**：有 Mali GPU 才是 EG/EV —— `ls /proc/device-tree | grep -i gpu`（会看到 `gpu@fd4b0000`）、
+   `dmesg | grep -i mali`、`ls /sys/bus/platform/drivers/mali`；全都没有 → CG。
+4. **把已知信息喂给驱动**：`jtagid identify -package SFVC784 -part xazu3eg-sfvc784-1-i`
+   —— 封装过滤 + 料号匹配，命中的那一行在窗口里高亮成「推荐」，CLI 直接给出推荐的 BSDL 路径。
+
+**界面里的过滤器现在真的能筛**（2018.3 实测，`JTAGID_TK_SELFTEST=1`）：
+
+| 过滤器 | 实测效果 |
+|---|---|
+| 封装 | `SFVC784`：候选从 8 个缩到 **2** 个（`candidate_rows=2`） |
+| 型号 | 下拉里是**每个文件自己的型号**（`XCZU3CG`、`XCZU3EG`，不再是合并的 `XCZU3CG/XCZU3EG`）→ 再选 `XCZU3EG` 只剩 **1** 行（`rows_after_model_filter=1`） |
+| 关键字 | 匹配 路径 / 实体名 / 型号 / 封装 |
+
+而且**封装提示、料号、BSDL 目录会被记住**（`%LOCALAPPDATA%\jtag_identify\gui_hints.txt`）：
+下次开窗自动填好，`-part` 命中的候选自动高亮成「推荐」并带 ★。
 
 ## 4. 版本自动兼容（按能力探测，不写死版本号）
 
@@ -314,6 +361,13 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
     —— 窗口因此永远能解锁并显示原因，不会再“卡死没有反应”。另外
     `catch {set x [f]} err` **成功时 `err` 是结果**：`cmd_reindex` 曾经把 840（文件数）
     当成错误显示成红色“失败”。
+18. **`split` 的第二个参数是“字符集合”，不是分隔符**：驱动用 `" | "` 把多行拼成一条
+    （`a | b`），前端却写 `split $text { | }` → 空格和竖线都当分隔符，
+    `"CG: no GPU, no VCU"` 被切成一堆单词。要按**单个**分隔符切就写 `split $text |`
+    （这和第 2 条的 regexp 贪婪是同一种“把分隔/匹配规则想当然”的坑）。
+19. **`get_parts` 没匹配到会打 WARNING，`catch` 拦不住**：查器件库时先拼对通配符，
+    封装未知就别拼出 `xczu3cg--*`（用 `xczu3cg-*`），并且用 `get_parts -quiet`，
+    否则每次识别都会冒出 `[Coretcl 2-179] No part matched ...`。
 
 ## 6. 文件与缓存
 
@@ -329,6 +383,7 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 | `jtagid_tk_test_nonblock.tcl` | 验证：source 立即返回、控制台空闲仍在服务、识别在后台跑完 |
 | `jtagid_tk_test_resident.tcl` | 验证：关窗=隐藏、`jtagid gui` 原样恢复、`stop` 后 Vivado 无恙 |
 | `jtagid_tk_test_buttons.tcl` | 验证：识别/扫描链/重建索引都回填表格并解锁按钮，坏命令也会报错+解锁 |
+| `jtagid_test_sku.tcl` | 验证：同 IDCODE 型号的 die/PS/PL 分析与推荐选取（批处理即可跑，需要线缆） |
 | `check_syntax.tcl` | 开发用：`tclsh check_syntax.tcl *.tcl` 只编译不执行地做语法检查 |
 | `jtagid_gui.cmd` | 可选：网页版启动器 |
 | `jtagid_web_gui.tcl` | 界面的后端：Tcl HTTP 服务 + JSON API（纯 ASCII、无外部依赖） |
