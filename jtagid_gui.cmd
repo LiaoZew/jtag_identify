@@ -9,12 +9,15 @@ rem
 rem  Options (set before running):
 rem     set JTAGID_PORT=8760        preferred port (default 8760)
 rem     set JTAGID_NO_BROWSER=1     do not open a browser
+rem     set JTAGID_NO_PAUSE=1       never wait for a key press
 rem  ASCII only on purpose.
 rem ===========================================================================
 setlocal
 set HERE=%~dp0
 if "%JTAGID_PORT%"=="" set JTAGID_PORT=8760
-set URLFILE=%LOCALAPPDATA%\jtag_identify\web_url.txt
+set DATADIR=%LOCALAPPDATA%\jtag_identify
+set URLFILE=%DATADIR%\web_url.txt
+set BACKLOG=%DATADIR%\web_backend.log
 
 rem ---- 1) find vivado.bat ------------------------------------------------
 set VIVADO=
@@ -28,24 +31,26 @@ if not defined VIVADO (
 )
 if not defined VIVADO (
     echo [jtagid] vivado.bat not found.  Add Vivado's bin directory to PATH and retry.
-    pause
-    exit /b 1
+    goto fail
 )
 
 rem ---- 2) start the backend ---------------------------------------------
+if not exist "%DATADIR%" mkdir "%DATADIR%" >nul 2>nul
 if exist "%URLFILE%" del /q "%URLFILE%" >nul 2>nul
 echo [jtagid] Vivado  : %VIVADO%
 echo [jtagid] port    : %JTAGID_PORT%
-echo [jtagid] starting the backend (a minimized window shows its log) ...
-start "jtagid backend" /min cmd /c ""%VIVADO%" -mode tcl -nolog -nojournal -notrace -source "%HERE%jtagid_web_gui.tcl""
+echo [jtagid] backend log: %BACKLOG%
+echo [jtagid] starting the backend (a minimized window stays open) ...
+start "jtagid backend" /min cmd /c ""%VIVADO%" -mode tcl -nolog -nojournal -notrace -source "%HERE%jtagid_web_gui.tcl" > "%BACKLOG%" 2>&1"
 
-rem ---- 3) wait until the backend published its URL ----------------------
+rem ---- 3) wait until the backend publishes its URL ----------------------
+rem  NOTE: "timeout" fails when stdin is redirected, so wait with ping.
 set /a tries=0
 :wait
 if exist "%URLFILE%" goto ready
 set /a tries+=1
 if %tries% GEQ 90 goto timeout
-timeout /t 2 /nobreak >nul
+ping -n 3 127.0.0.1 >nul 2>nul
 goto wait
 
 :ready
@@ -57,6 +62,10 @@ exit /b 0
 
 :timeout
 echo [jtagid] the backend did not come up within 3 minutes.
-echo          Look at the minimized "jtagid backend" window for the Vivado message.
-pause
+echo [jtagid] last lines of %BACKLOG% :
+powershell -NoProfile -Command "if (Test-Path '%BACKLOG%') { Get-Content '%BACKLOG%' -Tail 25 } else { 'no log file' }"
+goto fail
+
+:fail
+if not defined JTAGID_NO_PAUSE pause
 exit /b 1
