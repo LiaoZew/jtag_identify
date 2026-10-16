@@ -27,37 +27,62 @@ vivado -mode batch -source D:/work2026/ai/opencode/jtag_identify/jtagid.tcl -tcl
 
 （第一条 tclarg 是子命令；只有它属于本驱动时才自动执行，所以 GUI 里 source 不会误触发。）
 
-### 图形界面（Vivado 原生菜单 + 对话框，零外部依赖）
+### 图形界面（推荐）
+
+双击 **`jtagid_gui.cmd`**：它会另起一个 Vivado Tcl 进程做后端，然后用浏览器打开界面。
+不用 Tk，也不用装任何外部 Tcl/Tk。
+
+界面里有：
+
+| 区域 | 内容 |
+|---|---|
+| 工具栏 | **识别 FPGA 型号** 按钮、BSDL 目录、封装提示、料号校验、重建索引、关闭服务 |
+| 链上器件 | 每个 TAP 一行：器件名 / PART / IDCODE / 解码（Xilinx FPGA 会标绿） |
+| BSDL 候选 | **封装 / 型号 / 关键字三个过滤器** + 表格（型号 / 封装 / IRL / BSR / cells / 文件），**点一行即选定** |
+| 已选定 | 完整路径 + **复制路径** + **打开所在文件夹** + entity/IRL/BSR 详情 |
+
+打开页面会自动先识别一次；选定结果写入 `%LOCALAPPDATA%\jtag_identify\selected_bsdl.txt`。
+
+也可以不通过 `.cmd` 启动：
+
+```tcl
+source D:/work2026/ai/opencode/jtag_identify/jtagid_web_gui.tcl     ;# 在当前 Vivado 里起服务
+```
+
+```powershell
+set JTAGID_PORT=8760          # 可选，默认 8760（被占则 8761/8762/8763）
+set JTAGID_NO_BROWSER=1       # 可选，不自动开浏览器
+```
+
+> **为什么界面是网页而不是 Tk 窗口**：Vivado 的 Tcl **没有 Tk 运行时**。实测（GUI 模式）
+> 2018.3（Tcl 8.5.14）与 2024.2（Tcl 8.6.13）都是 `package require Tk` →
+> `can't find package Tk`，且 `toplevel` / `wm` / `ttk::button` **一个都不存在**；
+> 2024.2 只带了 Tk 的**脚本库**（`tps\tk\tk8.6`），缺 `tk86t.dll`，加进 `auto_path`
+> 后会报 `couldn't load library libtk8.6.so`。本机能找到的所有 `wish/tclsh`
+> （包括 Vivado / Vitis_HLS 树里的 `tps\win64\git-*\...`）**都是 Git for Windows 的**。
+> 所以界面用「Tcl 起 HTTP 服务 + 浏览器渲染」实现：**零外部依赖、按钮/表格/过滤器全都有**，
+> 逻辑仍然 100% 在 Tcl 里（`jtagid_web_gui.tcl`），页面只是显示层（`jtagid_web_gui.html`，UTF-8）。
+> 如果你想要真正的原生窗口，两条路：① 装一个非 Git 的 Tcl/Tk（如 tcl.tk 的 8.6 / ActiveTcl），
+> 然后跑 `jtagid_gui.tcl`（独立的 Tk 窗口 + 常驻后端，已验证握手 6.5 秒）；
+> ② 用 Xilinx 官方 TclStore 里的 **`tk_tunnel`**（外部 Tcl/Tk + socket 隧道，同样需要外部运行时）。
+
+### 附：Vivado 原生菜单/对话框（可选，轻量）
 
 ```tcl
 source D:/work2026/ai/opencode/jtag_identify/jtagid.tcl
 source D:/work2026/ai/opencode/jtag_identify/jtagid_vivado_gui.tcl
 ```
 
-之后在菜单 **Tools → Custom Commands** 里：
+菜单 **Tools → Custom Commands** 会出现三个**固定**命令（不会因为扫描结果而新增/变化）：
 
 | 菜单项 | 说明 |
 |---|---|
-| `jtagid: 识别 FPGA 型号` | 对话框三格：**BSDL 目录 / 封装提示 / 料号校验** → 读 IDCODE、反查 BSDL，候选清单打印到 Tcl Console |
-| `jtagid: 选用 N: 型号 封装` | **识别成功后动态出现**：每个候选一个菜单项，**点一下就用它**（不用打字、不用记路径） |
-| `jtagid: 按路径选用` | 手工填 BSDL 路径（默认已填第一个候选），应对候选很多的情况 |
+| `jtagid: 识别 FPGA 型号` | 对话框：BSDL 目录 / 封装提示 / 料号校验 → 识别结果打印到 Tcl Console |
 | `jtagid: 扫描 JTAG 链` | 只列链上所有 TAP |
 | `jtagid: 环境与版本` | Vivado/Tcl 版本、硬件命令兼容性、Tk 是否可用 |
 
-选中的 BSDL 路径会写到 `%LOCALAPPDATA%\jtag_identify\selected_bsdl.txt`，方便后续脚本取用。
-
-> **为什么界面不是 Tk**：Vivado 的 Tcl **没有 Tk 运行时**，实测（GUI 模式）
-> 2018.3（Tcl 8.5.14）和 2024.2（Tcl 8.6.13）都是 `package require Tk` →
-> `can't find package Tk`，且 `toplevel` / `wm` / `ttk::button` **一个都不存在**；
-> 2024.2 只带了 Tk 的**脚本库**（`tps\tk\tk8.6`），缺 `tk86t.dll`，加进 `auto_path`
-> 后会报 `couldn't load library libtk8.6.so`。本机能找到的所有 `wish/tclsh`
-> （包括 Vivado / Vitis_HLS 树里的 `tps\win64\git-*\...`）**都是 Git for Windows 的**。
-> Xilinx 官方的 Tk 路线是 TclStore 里的 **`tk_tunnel`**（在外部 Tcl/Tk 里起 GUI，
-> Vivado 经 socket 发 Tk 命令），但它同样需要一个外部 Tcl/Tk 运行时。
-> 所以这里用 Vivado 自己的 `create_gui_custom_command` + `create_gui_custom_command_arg`
-> 做界面 —— 2018.3 / 2022.2 / 2024.2 都有这套 API，**零外部依赖**。
-> （这套 API 的参数只有文本框：选项仅 `-default` / `-comment` / `-optional`，
-> 没有 `-arg_type` / `-choice_list`，所以“选择 BSDL”用动态菜单项而不是下拉框。）
+（这套 API 的参数只有文本框：选项仅 `-default` / `-comment` / `-optional`，没有 `-arg_type`
+/ `-choice_list`，所以"过滤选择"放在上面的图形界面里做，这里只做识别。）
 
 ## 2. 子命令
 
@@ -165,9 +190,12 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 | 文件 | 说明 |
 |---|---|
 | `jtagid.tcl` | 全部实现（约 1200 行，纯 ASCII，无 Python 依赖） |
-| `jtagid_vivado_gui.tcl` | Vivado 原生菜单/对话框界面（零外部依赖） |
-| `jtagid_gui_msgs.txt` | 界面文案（UTF-8，`key<TAB>文本`，改文案不用动代码） |
-| `jtagid_gui.tcl` | 备用：独立 Tk 窗口 + 常驻 `vivado -mode tcl` 后端；**仅当你自己另外装了非 Git 的 Tcl/Tk 时才可用** |
+| `jtagid_gui.cmd` | **图形界面启动器**（起后端 + 开浏览器） |
+| `jtagid_web_gui.tcl` | 界面的后端：Tcl HTTP 服务 + JSON API（纯 ASCII、无外部依赖） |
+| `jtagid_web_gui.html` | 界面本体（UTF-8，可直接改样式/文案） |
+| `jtagid_vivado_gui.tcl` | 可选：Vivado 原生菜单/对话框（只做识别，不动态建命令） |
+| `jtagid_gui_msgs.txt` | 原生菜单用到的文案（UTF-8，`key<TAB>文本`） |
+| `jtagid_gui.tcl` | 可选：原生 Tk 窗口 + 常驻 `vivado -mode tcl` 后端；**需要你自己装一个非 Git 的 Tcl/Tk** |
 | `bsdl/`（可选） | 放自己的 BSDL 树；缺省用 `../vivado_tools/bsdl`（840 个 Xilinx 官方 BSDL） |
 
 * BSDL 索引缓存：`%LOCALAPPDATA%\jtag_identify\bsdl_index_tcl.txt`

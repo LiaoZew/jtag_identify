@@ -43,7 +43,6 @@ namespace eval ::jtagid::vgui {
         candidates {}
         chosen     ""
         last_pkg   ""
-        pick_names {}
     }
 }
 
@@ -226,88 +225,17 @@ proc ::jtagid::vgui::identify {args} {
         puts "  note: this IDCODE matches several packages -> $packages"
         puts "        filter them with the 'package' field, or click a 'jtagid: Use ...' item below"
     }
-    ::jtagid::vgui::register_picks $filtered
-    puts "  pick one: Tools -> Custom Commands -> 'jtagid: Use ...'  (also available: Use by path)"
+    # NOTE: deliberately no dynamic menu items here (they would pile up in
+    # Tools -> Custom Commands after every identification).  Pick a candidate in
+    # the real GUI instead: jtagid_gui.cmd  ->  the web interface, or
+    # jtagid_web_gui.html with "jtagid" select. See README.
+    puts "  pick one: run jtagid_gui.cmd (or open the web GUI) and click a row there"
     update
     return
 }
 
-proc ::jtagid::vgui::register_picks {candidates} {
-    variable S
-    # drop the picker items of the previous run
-    ::jtagid::vgui::remove_commands $S(pick_names)
-    set S(pick_names) [list]
-    set n 0
-    set max 12
-    foreach c $candidates {
-        incr n
-        if {$n > $max} { break }
-        set name "jtagid_pick_$n"
-        set label [format "jtagid: Use %d: %s %s" $n [dict get $c models] [dict get $c package]]
-        set desc  "BSDL: [dict get $c path]\nentity=[dict get $c entity] IRL=[dict get $c irl] BSR=[dict get $c bsr]"
-        set cmd   [list ::jtagid::vgui::choose [dict get $c path]]
-        if {[::jtagid::vgui::add_command $name $label $desc $cmd]} {
-            lappend S(pick_names) $name
-        }
-    }
-    # and a manual entry point
-    set first ""
-    if {[llength $candidates] > 0} { set first [dict get [lindex $candidates 0] path] }
-    if {[::jtagid::vgui::add_command jtagid_pick_path \
-             [::jtagid::vgui::T menu_pick {jtagid: Use by path}] \
-             [::jtagid::vgui::T desc_pick {Use a BSDL file given by path}] \
-             ::jtagid::vgui::choose_by_path]} {
-        ::jtagid::vgui::add_arg jtagid_pick_path bsdl $first \
-            [::jtagid::vgui::T arg_pick {BSDL file to use (path)}]
-        lappend S(pick_names) jtagid_pick_path
-    }
-    if {[llength $candidates] > $max} {
-        puts "jtagid: only the first $max candidates got a menu item; use 'Use by path' for the rest"
-    }
-    return [llength $S(pick_names)]
-}
 
-proc ::jtagid::vgui::choose_by_path {args} {
-    ::jtagid::vgui::args_to_array opt $args {bsdl}
-    return [::jtagid::vgui::choose $opt(bsdl)]
-}
 
-proc ::jtagid::vgui::choose {path} {
-    variable S
-    set path [string trim $path]
-    if {$path eq ""} { puts "jtagid: no BSDL given"; return "" }
-    set path [string map {\\ /} $path]
-    if {![file exists $path]} {
-        puts "jtagid: not a file: $path"
-        return ""
-    }
-    set S(chosen) $path
-    puts "----------------------------------------------------------------"
-    puts " jtagid: selected BSDL"
-    puts "----------------------------------------------------------------"
-    puts "  file     : $path"
-    if {[llength [info commands ::jtagid::bsdl_details]] > 0} {
-        if {![catch {set d [::jtagid::bsdl_details $path]} err]} {
-            foreach key {entity model package irl bsr cells} {
-                if {[dict exists $d $key]} { puts [format "  %-9s: %s" $key [dict get $d $key]] }
-            }
-            if {[llength [info commands ::jtagid::ints]] > 0} {
-                puts "  usage    : jtagid boundary -bsdl [file tail $path]   (IRL/BSR above drive any further boundary-scan work)"
-            }
-        } else {
-            puts "  (bsdl_details: $err)"
-        }
-    }
-    set dir [file join $::env(LOCALAPPDATA) jtag_identify]
-    catch {file mkdir $dir}
-    if {![catch {open [file join $dir selected_bsdl.txt] w} fh]} {
-        puts $fh $path
-        close $fh
-        puts "  remembered: [file join $dir selected_bsdl.txt]"
-    }
-    update
-    return $path
-}
 
 proc ::jtagid::vgui::scan {args} {
     if {![::jtagid::vgui::ensure_driver]} { return }
@@ -354,11 +282,12 @@ proc ::jtagid::vgui::register {} {
     ::jtagid::vgui::load_msgs
     set ok 0
     set bdir [::jtagid::vgui::default_bsdl_dir]
+    # remove this file's own commands, plus leftovers of an older version that
+    # created one menu item per BSDL candidate
     ::jtagid::vgui::remove_commands {jtagid_identify jtagid_scan jtagid_env jtagid_pick jtagid_pick_path}
     foreach old [get_gui_custom_commands -quiet jtagid_pick_*] {
         ::jtagid::vgui::remove_commands $old
     }
-    set S(pick_names) [list]
     if {[::jtagid::vgui::add_command jtagid_identify \
              [::jtagid::vgui::T menu_identify {jtagid: Identify FPGA}] \
              [::jtagid::vgui::T desc_identify {Read IDCODE and look up the model in BSDL}] \
