@@ -416,7 +416,9 @@ proc ::jtagid::tkhost::data_from {res} {
         }
     }
     return [dict create env [string trim $env] devices $devices candidates $cands \
-                errors $errors part $part sku $sku selected $::jtagid::tkhost::S(selected)]
+                errors $errors part $part sku $sku \
+                pkg_used [expr {[dict exists $info package_hint_used] ? [dict get $info package_hint_used] : ""}] \
+                selected $::jtagid::tkhost::S(selected)]
 }
 
 proc ::jtagid::tkhost::cmd_identify {args} {

@@ -378,6 +378,14 @@ proc ::jtagid::tkgui::render_raw {} {
         $H(selected) configure -state readonly
     }
     ::jtagid::tkgui::fill_filters
+    # when the backend resolved a short hint ("784" -> SFVC784) the filter has to
+    # say so too, otherwise the combo box and the table disagree
+    set used [::jtagid::tkgui::dget $data pkg_used]
+    if {$used ne "" && [string equal -nocase [$H(fpkg) get] $used] == 0} {
+        catch {$H(fpkg) set $used}
+        # and heal the remembered hint, so "784" becomes SFVC784 for good
+        catch {$H(pkg) delete 0 end; $H(pkg) insert 0 $used}
+    }
     ::jtagid::tkgui::apply_filters
     ::jtagid::tkgui::set_busy 0
     set S(sku) [::jtagid::tkgui::dget $data sku {}]
@@ -700,8 +708,21 @@ proc ::jtagid::tkgui::copy_path {} {
 
 proc ::jtagid::tkgui::open_folder {} {
     variable S
-    if {$S(selected) eq ""} { return }
-    catch {exec {*}[list explorer.exe /select,$S(selected)]}
+    set path $S(selected)
+    if {$path eq ""} { return }
+    # Explorer needs a NATIVE path.  The paths we hold use forward slashes
+    # (BSDL/report/select all use them), and "/select,D:/x/y.bsd" opens nothing
+    # useful - a "This PC" window, which is exactly what this button used to do.
+    set native [file nativename [file normalize $path]]
+    if {[file exists $native]} {
+        catch {exec explorer.exe /select,$native &}
+    } elseif {[file isdirectory [file dirname $native]]} {
+        # the file is gone but its folder is still there: show the folder
+        catch {exec explorer.exe [file dirname $native] &}
+    } else {
+        ::jtagid::tkgui::set_status \
+            [::jtagid::tkgui::L status_notfound {file not found (was the BSDL folder moved?)}] error
+    }
     return
 }
 

@@ -414,8 +414,13 @@ proc ::jtagid::web::dispatch {chan method uri q body} {
             if {[dict exists $q path]} { set path [dict get $q path] }
             set path [string map {\\ /} $path]
             set done 0
-            if {[file exists $path]} {
-                if {![catch {exec {*}[list explorer.exe /select,$path]}]} { set done 1 }
+            # explorer needs a native (backslash) path, otherwise "/select,..."
+            # just opens a "This PC" window
+            set native [file nativename [file normalize $path]]
+            if {[file exists $native]} {
+                if {![catch {exec explorer.exe /select,$native &}]} { set done 1 }
+            } elseif {[file isdirectory [file dirname $native]]} {
+                if {![catch {exec explorer.exe [file dirname $native] &}]} { set done 1 }
             }
             ::jtagid::web::json_reply $chan [::jtagid::web::jobj [dict create \
                 ok $done path [::jtagid::web::js $path]]]

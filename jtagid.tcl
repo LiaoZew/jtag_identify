@@ -1365,7 +1365,8 @@ proc ::jtagid::collect_report {args} {
         # die, not the SKU, so the caller has to see the whole sibling set
         set all_models {}
         set all_pkgs {}
-        foreach g [::jtagid::group_by_architecture $hits] {
+        set groups [::jtagid::group_by_architecture $hits]
+        foreach g $groups {
             foreach m [dict get $g models] {
                 if {[lsearch -exact $all_models $m] < 0} { lappend all_models $m }
             }
@@ -1382,8 +1383,39 @@ proc ::jtagid::collect_report {args} {
         dict set res info sku_how [join [dict get $sku how] { | }]
 
         set shown 0
-        foreach group [::jtagid::group_by_architecture $hits] {
-            if {$want_pkg ne "" && [string toupper [dict get $group package]] ne $want_pkg} { continue }
+        set want_groups $groups
+        if {$want_pkg ne ""} {
+            set filtered {}
+            foreach g $groups {
+                if {[string toupper [dict get $g package]] eq $want_pkg} { lappend filtered $g }
+            }
+            if {[llength $filtered] == 0} {
+                # be forgiving: people type the short form ("784" for SFVC784),
+                # and a stale hint must never leave an empty candidate list
+                foreach g $groups {
+                    set p [string toupper [dict get $g package]]
+                    if {[string match "*$want_pkg" $p] || [string match "*$want_pkg*" $p]} {
+                        lappend filtered $g
+                    }
+                }
+                if {[llength $filtered] > 0} {
+                    set used {}
+                    foreach g $filtered {
+                        if {[lsearch -exact $used [dict get $g package]] < 0} { lappend used [dict get $g package] }
+                    }
+                    dict set res info package_hint_note \
+                        "package hint $want_pkg -> [join $used {, }]"
+                    if {[llength $used] == 1} { dict set res info package_hint_used [lindex $used 0] }
+                }
+            }
+            if {[llength $filtered] > 0} {
+                set want_groups $filtered
+            } else {
+                dict lappend res errors \
+                    "no BSDL for package $want_pkg; showing every package instead: [join [lsort $all_pkgs] {, }]"
+            }
+        }
+        foreach group $want_groups {
             set models [join [dict get $group models] /]
             foreach path [dict get $group paths] {
                 set entity [dict get [::jtagid::bsdl_details $path] entity]
@@ -1401,9 +1433,6 @@ proc ::jtagid::collect_report {args} {
                     entity $entity recommended $rec]
                 incr shown
             }
-        }
-        if {$want_pkg ne "" && $shown == 0} {
-            dict lappend res errors "no BSDL for package $want_pkg; this IDCODE comes in: [join [lsort $all_pkgs] {, }]"
         }
         if {$opts(-part) ne ""} {
             set norm [::jtagid::grade_norm $part_fam]

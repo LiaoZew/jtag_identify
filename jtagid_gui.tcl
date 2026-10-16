@@ -498,7 +498,14 @@ proc ::jtagid::gui::copy_path {} {
 proc ::jtagid::gui::open_folder {} {
     variable S
     if {$S(selected) eq ""} { return }
-    catch {exec {*}[list explorer.exe /select,$S(selected)]}
+    # native path: "/select,D:/x/y.bsd" (forward slashes) opens a "This PC"
+    # window instead of the folder
+    set native [file nativename [file normalize $S(selected)]]
+    if {[file exists $native]} {
+        catch {exec explorer.exe /select,$native &}
+    } elseif {[file isdirectory [file dirname $native]]} {
+        catch {exec explorer.exe [file dirname $native] &}
+    }
 }
 
 #==============================================================================

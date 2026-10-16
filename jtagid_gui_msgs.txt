@@ -64,6 +64,7 @@ status_copied	路径已复制到剪贴板
 status_waiting	正在连接 Vivado 后端…
 status_backend_ok	Vivado 后端已就绪，正在自动识别…
 status_nobackend	Vivado 没有响应：请在 Vivado IDE 的 Tcl Console 里 source 本文件（-mode tcl 的纯 Tcl 窗口不会响应界面）
+status_notfound	文件不存在（BSDL 目录是不是被移动过？）
 # —— SKU 区分（同一颗硅片、同 IDCODE 的不同型号）——
 col_model	型号
 tag_recommended	推荐
