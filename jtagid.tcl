@@ -1016,24 +1016,26 @@ proc ::jtagid::one_line {text} {
 }
 
 proc ::jtagid::cmd_gui {args} {
-    # Open the Tk GUI in THIS interpreter: the GUI calls the driver procedures
-    # directly, so there is no subprocess, no pipes and no external Tk runtime.
-    # Tk must be provided by the host: check with  jtagid version  or
-    # "package require Tk".  See the Tk section of the README.
+    # Start the GUI.  The real interface is the local web UI served by Tcl
+    # (buttons, tables, filters) because Vivado's Tcl has no Tk runtime:
+    # verified in GUI mode on 2018.3 and 2024.2, "package require Tk" fails and
+    # toplevel/wm/ttk do not exist.  jtagid_gui.tcl (a native Tk window plus a
+    # vivado -mode tcl backend) is only for hosts that do have a Tcl/Tk.
     set here [file dirname [file normalize [info script]]]
+    set web [file join $here jtagid_web_gui.tcl]
+    if {[file exists $web]} {
+        uplevel #0 [list source $web]
+        return
+    }
     set gui [file join $here jtagid_gui.tcl]
-    if {![file exists $gui]} {
-        return -code error "jtagid_gui.tcl not found next to jtagid.tcl ($here)"
+    if {[file exists $gui]} {
+        if {[catch {package require Tk} err]} {
+            return -code error "no web GUI ($web) and no Tk ($err)"
+        }
+        uplevel #0 [list source $gui]
+        return
     }
-    if {[catch {package require Tk} err]} {
-        puts "This interpreter has no Tk: $err"
-        puts "  * in Vivado 2018.3 Tk is not part of the stock build (verified);"
-        puts "    use a Tcl/Tk 8.5+ shell that can read the driver and source:"
-        puts "      source \"$gui\""
-        return -code error "Tk not available"
-    }
-    uplevel #0 [list source $gui]
-    return
+    return -code error "no GUI file found next to jtagid.tcl ($here)"
 }
 
 proc ::jtagid::collect_report {args} {

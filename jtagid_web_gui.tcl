@@ -40,6 +40,36 @@ namespace eval ::jtagid::web {
 set ::jtagid::web::HERE [file dirname [file normalize [info script]]]
 
 #==============================================================================
+# backend log (written by Tcl, so the .cmd launcher needs no shell redirection)
+#==============================================================================
+
+proc ::jtagid::web::logfile {} {
+    if {![info exists ::env(LOCALAPPDATA)]} { return "" }
+    set dir [file join $::env(LOCALAPPDATA) jtag_identify]
+    catch {file mkdir $dir}
+    return [file join $dir web_backend.log]
+}
+
+proc ::jtagid::web::note {text {truncate 0}} {
+    set path [::jtagid::web::logfile]
+    if {$path eq ""} { return }
+    if {[catch {open $path [expr {$truncate ? "w" : "a"}]} fh]} { return }
+    catch {
+        fconfigure $fh -encoding utf-8
+        if {$truncate} {
+            puts $fh "jtagid web GUI backend log"
+            puts $fh "started [clock format [clock seconds]]"
+            puts $fh "tcl     [info patchlevel]"
+            puts $fh "script  [info script]"
+            puts $fh "------------------------------------------------------------"
+        }
+        puts $fh "[clock format [clock seconds] -format {%H:%M:%S}] $text"
+        close $fh
+    }
+    return
+}
+
+#==============================================================================
 # tiny JSON helpers (Tcl 8.5 has no json package)
 #==============================================================================
 
@@ -410,6 +440,7 @@ proc ::jtagid::web::dispatch {chan method uri q body} {
 proc ::jtagid::web::stop {} {
     variable S
     if {$S(server) ne ""} { catch {close $S(server)}; set S(server) "" }
+    ::jtagid::web::note "stopped"
     puts "jtagid: web GUI stopped"
     return
 }
@@ -430,9 +461,11 @@ proc ::jtagid::web::start {{port ""}} {
         }
     }
     if {![::jtagid::web::ensure_driver]} {
+        ::jtagid::web::note "FATAL: jtagid.tcl not found next to jtagid_web_gui.tcl"
         puts "jtagid: jtagid.tcl not found next to jtagid_web_gui.tcl"
         return 0
     }
+    ::jtagid::web::note "driver loaded: Vivado [expr {[info exists ::jtagid::compat(vivado)] ? $::jtagid::compat(vivado) : {?}}]"
     # find a free port, prefer the requested one
     set bound ""
     foreach candidate [concat [list $port] [list [expr {$port + 1}] [expr {$port + 2}] [expr {$port + 3}]]] {
@@ -443,12 +476,14 @@ proc ::jtagid::web::start {{port ""}} {
         }
     }
     if {$bound eq ""} {
+        ::jtagid::web::note "FATAL: cannot listen on port $port: $err"
         puts "jtagid: cannot listen on port $port: $err"
         return 0
     }
     set S(port) $bound
     fconfigure $S(server) -blocking 0
     set url "http://127.0.0.1:$bound/"
+    ::jtagid::web::note "listening on $url"
     # hand the URL to the launcher (jtagid_gui.cmd) so it can open the browser
     catch {
         set dir [file join $::env(LOCALAPPDATA) jtag_identify]
@@ -458,6 +493,7 @@ proc ::jtagid::web::start {{port ""}} {
         close $fh
     }
     puts "================================================================"
+    ::jtagid::web::note "ready: $url"
     puts " jtagid web GUI is running"
     puts "   $url"
     puts "   (Vivado [lindex [split [::jtagid::probe_compat_note] { }] 0], BSDL dir [::jtagid::web::default_bsdl_dir])"
@@ -477,4 +513,6 @@ proc ::jtagid::web::start {{port ""}} {
 # entry point
 #==============================================================================
 
+::jtagid::web::note "jtagid_web_gui.tcl entered" 1
 ::jtagid::web::start
+::jtagid::web::note "start returned (server not running)"

@@ -41,7 +41,7 @@ echo [jtagid] Vivado  : %VIVADO%
 echo [jtagid] port    : %JTAGID_PORT%
 echo [jtagid] backend log: %BACKLOG%
 echo [jtagid] starting the backend (a minimized window stays open) ...
-start "jtagid backend" /min cmd /c ""%VIVADO%" -mode tcl -nolog -nojournal -notrace -source "%HERE%jtagid_web_gui.tcl" > "%BACKLOG%" 2>&1"
+start "jtagid backend" /min cmd /c ""%VIVADO%" -mode tcl -nolog -nojournal -notrace -source "%HERE%jtagid_web_gui.tcl""
 
 rem ---- 3) wait until the backend publishes its URL ----------------------
 rem  NOTE: "timeout" fails when stdin is redirected, so wait with ping.
