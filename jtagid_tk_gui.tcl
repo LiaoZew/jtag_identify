@@ -349,6 +349,13 @@ proc ::jtagid::tkhost::run_line {line} {
     if {$code} {
         ::jtagid::tkhost::note "command from the window failed: $res"
         ::jtagid::tkhost::note "  command was: [string range $line 0 200]"
+        set trace [string map [list "\n" " // " "\t" " "] $::errorInfo]
+        ::jtagid::tkhost::note "  trace: [string range $trace 0 400]"
+        # never leave the window waiting for a reply that will not come
+        catch {
+            ::jtagid::tkhost::send_line \
+                "::jtagid::tkgui::show_error [list [::jtagid::tkhost::ascii_only $res]]"
+        }
     }
     return
 }
@@ -428,20 +435,24 @@ proc ::jtagid::tkhost::cmd_identify {args} {
 
 proc ::jtagid::tkhost::cmd_scan {} {
     variable S
-    set res [dict create devices [list] candidates [list] errors [list] info [dict create] part ""]
-    if {[catch {::jtagid::connect} err] || [catch {::jtagid::ensure_target} err2]} {
-        if {$err2 ne ""} { set err $err2 }
-        dict lappend res errors [::jtagid::tkhost::ascii_only $err]
-        ::jtagid::tkhost::push [dict create env "" devices [list] candidates [list] \
-            errors [dict get $res errors] part "" selected $S(selected)]
-        return
+    set errors [list]
+    foreach step {connect ensure_target} {
+        if {[catch {::jtagid::$step} out]} {
+            lappend errors [::jtagid::tkhost::ascii_only [::jtagid::one_line $out]]
+        }
     }
-    foreach d [::jtagid::devices] {
-        dict lappend res devices $d
+    set recs [list]
+    if {[llength $errors] == 0} {
+        if {[catch {set recs [::jtagid::device_records]} err]} {
+            lappend errors [::jtagid::tkhost::ascii_only [::jtagid::one_line $err]]
+        } elseif {[llength $recs] == 0} {
+            lappend errors "no devices enumerated on the chain"
+        }
     }
-    set S(devices) [dict get $res devices]
+    if {[llength $recs] > 0} { set S(devices) $recs }
+    ::jtagid::tkhost::note "scan: [llength $recs] TAP(s), [llength $errors] problem(s)"
     ::jtagid::tkhost::push [dict create env "target $::jtagid::state(url)" \
-        devices [dict get $res devices] candidates $S(candidates) errors [list] \
+        devices $S(devices) candidates $S(candidates) errors $errors \
         part "" selected $S(selected)]
     return
 }
@@ -449,19 +460,20 @@ proc ::jtagid::tkhost::cmd_scan {} {
 proc ::jtagid::tkhost::cmd_reindex {args} {
     variable S
     set dir [lindex $args 0]
-    set err ""
+    set errors [list]
     set count 0
     if {$dir ne "" && [file isdirectory $dir]} {
         set ::jtagid::state(bsdl_dir) [file normalize $dir]
     }
-    catch {set count [::jtagid::bsdl_index 1]} err
-    set errors [list]
-    set env "BSDL index: $count files"
-    if {$err ne ""} { lappend errors [::jtagid::tkhost::ascii_only $err] }
-    set cands [list]
-    catch {set cands $S(candidates)}
-    ::jtagid::tkhost::push [dict create env "$env   dir=$::jtagid::state(bsdl_dir)" \
-        devices $S(devices) candidates $cands errors $errors part "" selected $S(selected)]
+    # note: on success the catch variable holds the RESULT (the file count),
+    # so it may only be read inside the failure branch
+    if {[catch {set count [::jtagid::bsdl_index 1]} err]} {
+        lappend errors [::jtagid::tkhost::ascii_only [::jtagid::one_line $err]]
+    }
+    ::jtagid::tkhost::note "reindex: $count BSDL file(s) in $::jtagid::state(bsdl_dir)"
+    ::jtagid::tkhost::push [dict create env "BSDL index: $count files   dir=$::jtagid::state(bsdl_dir)" \
+        devices $S(devices) candidates $S(candidates) errors $errors \
+        part "" selected $S(selected)]
     return
 }
 

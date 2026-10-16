@@ -487,6 +487,29 @@ proc ::jtagid::devices {} {
 # BSDL: index + IDCODE lookup
 #==============================================================================
 
+proc ::jtagid::device_records {} {
+    # One record per TAP in the shape the report and the GUI both use:
+    #   {name part idcode family array mfg fpga}
+    # ::jtagid::devices returns only name/part/idcode/usercode/raw, so anything
+    # rendering a device list has to come through here (a missing key used to
+    # make the Tk side throw while redrawing and left the window stuck).
+    set out {}
+    foreach d [::jtagid::devices] {
+        set idc [dict get $d idcode]
+        set family ""; set array ""; set mfgn ""; set isfpga 0
+        if {$idc ne ""} {
+            set f [::jtagid::decode_idcode $idc]
+            set family [dict get $f family]
+            set array  [dict get $f array]
+            set mfgn   [::jtagid::mfg_name [dict get $f mfg]]
+            if {[dict get $f mfg] == 0x049} { set isfpga 1 }
+        }
+        lappend out [dict create name [dict get $d name] part [dict get $d part] \
+            idcode $idc family $family array $array mfg $mfgn fpga $isfpga]
+    }
+    return $out
+}
+
 proc ::jtagid::default_bsdl_dir {} {
     set here [file dirname [file normalize [info script]]]
     foreach cand [list \
@@ -1123,18 +1146,12 @@ proc ::jtagid::collect_report {args} {
         return $res
     }
     set fpga {}
-    foreach d $devs {
-        set idc [dict get $d idcode]
-        set family ""; set array ""; set mfgn ""; set isfpga 0
-        if {$idc ne ""} {
-            set f [::jtagid::decode_idcode $idc]
-            set family [dict get $f family]
-            set array  [dict get $f array]
-            set mfgn   [::jtagid::mfg_name [dict get $f mfg]]
-            if {[dict get $f mfg] == 0x049} { set isfpga 1; lappend fpga $idc }
-        }
-        dict lappend res devices [dict create name [dict get $d name] part [dict get $d part] \
-            idcode $idc family $family array $array mfg $mfgn fpga $isfpga]
+    foreach d [::jtagid::device_records] {
+        # dict lappend, NOT lappend: res is a dict, and "lappend res devices $d"
+        # appends to the dict-as-list, producing a malformed dict whose device
+        # entries blow up with "missing value to go with key" when read back
+        dict lappend res devices $d
+        if {[dict get $d fpga] == 1} { lappend fpga [dict get $d idcode] }
     }
     if {[llength $fpga] == 0} {
         dict lappend res errors "no Xilinx FPGA IDCODE (mfg=0x049) on the chain"

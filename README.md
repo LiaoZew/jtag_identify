@@ -70,6 +70,8 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 | 已选定 | 完整路径 · 复制路径 · 打开所在文件夹 · entity/IRL/BSR 详情 |
 
 打开窗口会自动识别一次；选定结果写入 `%LOCALAPPDATA%\jtag_identify\selected_bsdl.txt`。
+三个按钮（识别 / 扫描链 / 重建索引）都走同一条路径：点一下 → 后端执行 → 结果回填表格。
+任何一步在后端出错，原因都会出现在状态栏并把按钮解锁（不会再出现“点了没反应”）。
 
 | 命令 | 作用 |
 |---|---|
@@ -131,6 +133,18 @@ jtagid: window restored (service was already running)
 RESIDENT|rows after re-open: 8                       <- 数据还在
 RESIDENT|window is mapped again: 1
 RESIDENT|after stop: alive=0 pid=
+```
+
+三个按钮（含故意打错的命令）也是实测过的（`jtagid_tk_test_buttons.tcl`，2018.3）：
+
+```
+BTN|after-identify|busy=0 dev_rows=2 cand_rows=8
+BTN|after-scan|busy=0 dev_rows=2 cand_rows=8         <- 扫描链不清空候选表、不卡住
+BTN|after-reindex|busy=0 dev_rows=2 cand_rows=8      <- 重建索引 840 个文件（约 1 秒）
+BTN|after-bogus|busy=0 dev_rows=2 cand_rows=8        <- 后端抛错也会解锁
+BTN|after-bogus|status=失败: invalid command name "::jtagid::tkhost::cmd_this_does_not_exist"
+jtagid: scan: 2 TAP(s), 0 problem(s)
+jtagid: reindex: 840 BSDL file(s) in D:/.../vivado_tools/bsdl
 ```
 
 > **Tcl/Tk 运行时从哪来**：Vivado 的 Tcl **本身没有 Tk**（GUI 模式实测 2018.3 / 2024.2 都是
@@ -284,6 +298,22 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 14. **source 期间不能让长活在跑**：前端窗口建好后先发一条 “hello”，后端收到才回
     “backend_ready”，自动识别由它触发 —— 这样 source 的返回时间永远是零点几秒，
     不会把一次 6~20 秒的识别算进启动里。
+15. **`lappend` 和 `dict lappend` 不能混用**：`res` 是 dict 的时候写
+    `lappend res devices $d`，Tcl 会把它当**列表**追加，得到一个**元素个数为奇数**的畸形
+    dict；读回来时 `dict get $d name` 直接抛 `missing value to go with key`。
+    这就是「扫描链点了没反应」的根因：`collect_report` 里设备列表被写坏 → 前端 `data_from`
+    抛错 → 窗口收不到回复、按钮一直灰着（看起来就是卡死）。已改为 `dict lappend`
+    （`jtagid.tcl` 里有注释，别改回去）。
+16. **设备记录的字段要和渲染代码对齐**：`::jtagid::devices` 只给 `name/part/idcode`，
+    而窗口要读 `mfg/family/array/fpga` —— 缺键时 `dict get` 抛错、重绘中断、
+    `set_busy 0` 执行不到，窗口就永久停在“忙”（按钮全灰）= 用户眼里的卡死。
+    现在设备记录统一由 `::jtagid::device_records` 产出（`collect_report` 与扫描共用一份），
+    候选记录由前端 `norm_cand` 补齐字段，`render` 全程用 `dget` 取键。
+17. **任何后端错误都必须回一条消息**：`run_line` 里命令抛错时会回
+    `::jtagid::tkgui::show_error "..."`（并记下 `errorInfo` 前 400 字），前端也会 `set_busy 0`
+    —— 窗口因此永远能解锁并显示原因，不会再“卡死没有反应”。另外
+    `catch {set x [f]} err` **成功时 `err` 是结果**：`cmd_reindex` 曾经把 840（文件数）
+    当成错误显示成红色“失败”。
 
 ## 6. 文件与缓存
 
@@ -298,6 +328,7 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 | `jtagid_tk_probe_idle.tcl` | 诊断：测当前会话空闲时是否服务 Tcl 事件（“不卡死”的前提） |
 | `jtagid_tk_test_nonblock.tcl` | 验证：source 立即返回、控制台空闲仍在服务、识别在后台跑完 |
 | `jtagid_tk_test_resident.tcl` | 验证：关窗=隐藏、`jtagid gui` 原样恢复、`stop` 后 Vivado 无恙 |
+| `jtagid_tk_test_buttons.tcl` | 验证：识别/扫描链/重建索引都回填表格并解锁按钮，坏命令也会报错+解锁 |
 | `check_syntax.tcl` | 开发用：`tclsh check_syntax.tcl *.tcl` 只编译不执行地做语法检查 |
 | `jtagid_gui.cmd` | 可选：网页版启动器 |
 | `jtagid_web_gui.tcl` | 界面的后端：Tcl HTTP 服务 + JSON API（纯 ASCII、无外部依赖） |

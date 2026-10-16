@@ -274,29 +274,56 @@ proc ::jtagid::tkgui::set_env {text} {
     return
 }
 
+proc ::jtagid::tkgui::dget {d key {default ""}} {
+    # never throw on a missing key: a redraw that throws used to leave the
+    # window stuck in its busy state (buttons disabled, no reply shown)
+    if {[catch {dict exists $d $key} have]} { return $default }
+    if {$have} { return [dict get $d $key] }
+    return $default
+}
+
+proc ::jtagid::tkgui::show_error {text} {
+    ::jtagid::tkgui::set_busy 0
+    ::jtagid::tkgui::set_status "[::jtagid::tkgui::L status_failed {failed}]: $text" error
+    return
+}
+
 proc ::jtagid::tkgui::render {} {
+    # safety net: whatever the backend sends, the window must end up usable
+    if {[catch {::jtagid::tkgui::render_raw} err]} {
+        ::jtagid::tkgui::show_error "redraw failed: $err"
+    }
+    return
+}
+
+proc ::jtagid::tkgui::render_raw {} {
     variable S
     variable H
     if {![info exists ::jtagid::tkgui::DATA]} { return }
     set data $::jtagid::tkgui::DATA
-    set get {[dict get $data %s]}
     # environment line
     if {[dict exists $data env]} { ::jtagid::tkgui::set_env [dict get $data env] }
     # devices
     $H(devtv) delete [$H(devtv) children {}]
-    foreach d [dict get $data devices] {
+    foreach d [::jtagid::tkgui::dget $data devices {}] {
+        set idcode [::jtagid::tkgui::dget $d idcode]
         set decoded ""
-        if {[dict get $d idcode] ne ""} {
-            set decoded "[dict get $d mfg] family=[dict get $d family] array=[dict get $d array]"
-            if {[dict get $d fpga] eq "1"} { append decoded "  [::jtagid::tkgui::L tag_fpga {Xilinx FPGA}]" }
+        if {$idcode ne ""} {
+            set decoded "[::jtagid::tkgui::dget $d mfg] family=[::jtagid::tkgui::dget $d family] array=[::jtagid::tkgui::dget $d array]"
+            if {[::jtagid::tkgui::dget $d fpga] eq "1"} { append decoded "  [::jtagid::tkgui::L tag_fpga {Xilinx FPGA}]" }
         }
-        $H(devtv) insert {} end -values [list [dict get $d name] [dict get $d part] \
-            [dict get $d idcode] $decoded]
+        $H(devtv) insert {} end -values [list [::jtagid::tkgui::dget $d name] \
+            [::jtagid::tkgui::dget $d part] $idcode $decoded]
     }
     # candidates
-    set S(candidates) [dict get $data candidates]
-    if {[dict exists $data selected] && [dict get $data selected] ne ""} {
-        set S(selected) [dict get $data selected]
+    set norm {}
+    foreach c [::jtagid::tkgui::dget $data candidates {}] {
+        lappend norm [::jtagid::tkgui::norm_cand $c]
+    }
+    set S(candidates) $norm
+    set sel [::jtagid::tkgui::dget $data selected]
+    if {$sel ne ""} {
+        set S(selected) $sel
         $H(selected) configure -state normal
         $H(selected) delete 0 end
         $H(selected) insert 0 $S(selected)
@@ -305,16 +332,14 @@ proc ::jtagid::tkgui::render {} {
     ::jtagid::tkgui::fill_filters
     ::jtagid::tkgui::apply_filters
     ::jtagid::tkgui::set_busy 0
-    set errors {}
-    if {[dict exists $data errors]} { set errors [dict get $data errors] }
+    set errors [::jtagid::tkgui::dget $data errors {}]
     if {[llength $errors] > 0} {
         ::jtagid::tkgui::set_status "[::jtagid::tkgui::L status_failed {failed}]: [join $errors { | }]" error
     } else {
-        set msg "[::jtagid::tkgui::L status_done {done}]: [llength [dict get $data devices]] TAP, [llength $S(candidates)] BSDL"
-        if {[dict exists $data part] && $data ne "" } {
-            if {[dict exists $data part given]} {
-                append msg "  |  [dict get $data part given] -> [dict get $data part matched] ([dict get $data part message])"
-            }
+        set msg "[::jtagid::tkgui::L status_done {done}]: [llength [::jtagid::tkgui::dget $data devices {}]] TAP, [llength $S(candidates)] BSDL"
+        set part [::jtagid::tkgui::dget $data part]
+        if {$part ne ""} {
+            append msg "  |  [::jtagid::tkgui::dget $part given] -> [::jtagid::tkgui::dget $part matched] ([::jtagid::tkgui::dget $part message])"
         }
         ::jtagid::tkgui::set_status $msg ok
     }
@@ -324,6 +349,23 @@ proc ::jtagid::tkgui::render {} {
 #==============================================================================
 # filtering
 #==============================================================================
+
+proc ::jtagid::tkgui::norm_cand {c} {
+    # give every candidate the full key set the window reads, so a short record
+    # can never break a redraw
+    set path [::jtagid::tkgui::dget $c path]
+    set file [::jtagid::tkgui::dget $c file]
+    if {$file eq ""} { set file [file tail $path] }
+    return [dict create \
+        path    $path \
+        file    $file \
+        entity  [::jtagid::tkgui::dget $c entity] \
+        models  [::jtagid::tkgui::dget $c models] \
+        package [::jtagid::tkgui::dget $c package] \
+        irl     [::jtagid::tkgui::dget $c irl] \
+        bsr     [::jtagid::tkgui::dget $c bsr] \
+        cells   [::jtagid::tkgui::dget $c cells]]
+}
 
 proc ::jtagid::tkgui::fill_filters {} {
     variable S
