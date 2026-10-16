@@ -1010,6 +1010,165 @@ proc ::jtagid::cmd_close {args} {
     return
 }
 
+proc ::jtagid::one_line {text} {
+    # flatten multi-line messages for the tab separated report format
+    return [string map [list "\r\n" " " "\n" " " "\r" " " "\t" " "] $text]
+}
+
+proc ::jtagid::cmd_gui {args} {
+    # Open the Tk GUI in THIS interpreter: the GUI calls the driver procedures
+    # directly, so there is no subprocess, no pipes and no external Tk runtime.
+    # Tk must be provided by the host: check with  jtagid version  or
+    # "package require Tk".  See the Tk section of the README.
+    set here [file dirname [file normalize [info script]]]
+    set gui [file join $here jtagid_gui.tcl]
+    if {![file exists $gui]} {
+        return -code error "jtagid_gui.tcl not found next to jtagid.tcl ($here)"
+    }
+    if {[catch {package require Tk} err]} {
+        puts "This interpreter has no Tk: $err"
+        puts "  * in Vivado 2018.3 Tk is not part of the stock build (verified);"
+        puts "    use a Tcl/Tk 8.5+ shell that can read the driver and source:"
+        puts "      source \"$gui\""
+        return -code error "Tk not available"
+    }
+    uplevel #0 [list source $gui]
+    return
+}
+
+proc ::jtagid::collect_report {args} {
+    # Same work as "jtagid report" but returns a dict instead of printing:
+    #   devices    list of dicts {name part idcode family array mfg fpga}
+    #   candidates list of dicts {models package irl bsr cells path entity}
+    #   info       dict {vivado url bsdl_dir bsdl_files idcode}
+    #   part       dict {given matched message} or ""
+    #   errors     list of messages
+    variable state
+    ::jtagid::parse_opts opts $args {-package "" -part "" -bsdl-dir "" -quiet 1}
+    set prev_quiet $state(quiet)
+    set state(quiet) $opts(-quiet)
+    set res [dict create devices [list] candidates [list] info [dict create] part "" errors [list]]
+    dict set res info vivado [::jtagid::probe_compat_note]
+    if {$opts(-bsdl-dir) ne ""} {
+        if {![file isdirectory $opts(-bsdl-dir)]} {
+            dict lappend res errors "not a directory: $opts(-bsdl-dir)"
+            set state(quiet) $prev_quiet
+            return $res
+        }
+        set state(bsdl_dir) [file normalize $opts(-bsdl-dir)]
+    }
+    foreach step {connect ensure_target} {
+        set err ""
+        if {[catch {::jtagid::$step} out]} {
+            dict lappend res errors [::jtagid::one_line $out]
+        }
+    }
+    if {[llength [dict get $res errors]] > 0} {
+        set state(quiet) $prev_quiet
+        return $res
+    }
+    dict set res info url $state(url)
+    set devs [::jtagid::devices]
+    if {[llength $devs] == 0} {
+        dict lappend res errors "no devices enumerated on the chain"
+        set state(quiet) $prev_quiet
+        return $res
+    }
+    set fpga {}
+    foreach d $devs {
+        set idc [dict get $d idcode]
+        set family ""; set array ""; set mfgn ""; set isfpga 0
+        if {$idc ne ""} {
+            set f [::jtagid::decode_idcode $idc]
+            set family [dict get $f family]
+            set array  [dict get $f array]
+            set mfgn   [::jtagid::mfg_name [dict get $f mfg]]
+            if {[dict get $f mfg] == 0x049} { set isfpga 1; lappend fpga $idc }
+        }
+        dict lappend res devices [dict create name [dict get $d name] part [dict get $d part] \
+            idcode $idc family $family array $array mfg $mfgn fpga $isfpga]
+    }
+    if {[llength $fpga] == 0} {
+        dict lappend res errors "no Xilinx FPGA IDCODE (mfg=0x049) on the chain"
+        set state(quiet) $prev_quiet
+        return $res
+    }
+    if {[catch {set count [::jtagid::bsdl_index]} err]} {
+        dict lappend res errors [::jtagid::one_line $err]
+        set state(quiet) $prev_quiet
+        return $res
+    }
+    dict set res info bsdl_dir $state(bsdl_dir)
+    dict set res info bsdl_files $count
+    dict set res info idcode [lindex $fpga 0]
+    foreach idc $fpga {
+        set hits [::jtagid::match_idcode $idc]
+        if {[llength $hits] == 0} {
+            dict lappend res errors "$idc: no matching BSDL in $state(bsdl_dir)"
+            continue
+        }
+        foreach group [::jtagid::group_by_architecture $hits] {
+            set models [join [dict get $group models] /]
+            foreach path [dict get $group paths] {
+                dict lappend res candidates [dict create \
+                    models $models package [dict get $group package] \
+                    irl [dict get $group irl] bsr [dict get $group bsr] \
+                    cells [dict get $group cells] path $path \
+                    entity [dict get [::jtagid::bsdl_details $path] entity]]
+            }
+        }
+        if {$opts(-part) ne ""} {
+            set pl [split [string tolower $opts(-part)] -]
+            set fam [lindex $pl 0]
+            set norm [::jtagid::grade_norm $fam]
+            set found ""
+            foreach group [::jtagid::group_by_architecture $hits] {
+                foreach m [dict get $group models] {
+                    if {[::jtagid::grade_norm $m] eq $norm} { set found $m }
+                }
+            }
+            if {$found eq ""} {
+                dict set res part [dict create given $opts(-part) matched "" \
+                    message "no such model in BSDL; trust the silicon IDCODE"]
+            } elseif {[string equal -nocase $fam $found]} {
+                dict set res part [dict create given $opts(-part) matched $found \
+                    message "matches the BSDL model"]
+            } else {
+                dict set res part [dict create given $opts(-part) matched $found \
+                    message "grade letter differs (same silicon/IDCODE)"]
+            }
+        }
+    }
+    set state(quiet) $prev_quiet
+    return $res
+}
+
+proc ::jtagid::cmd_report {args} {
+    # Machine readable output (tab separated, ASCII) for scripts and the GUI:
+    #   REPORT<TAB>BEGIN|END
+    #   INFO<TAB>key<TAB>value
+    #   DEV<TAB>name<TAB>part<TAB>idcode<TAB>family<TAB>array<TAB>mfg<TAB>is_fpga
+    #   CAND<TAB>models<TAB>package<TAB>irl<TAB>bsr<TAB>cells<TAB>path<TAB>entity
+    #   PART<TAB>given<TAB>matched<TAB>message
+    #   ERR<TAB>message
+    set res [::jtagid::collect_report {*}$args]
+    puts "REPORT\tBEGIN"
+    dict for {key value} [dict get $res info] { puts "INFO\t$key\t$value" }
+    foreach d [dict get $res devices] {
+        puts "DEV\t[dict get $d name]\t[dict get $d part]\t[dict get $d idcode]\t[dict get $d family]\t[dict get $d array]\t[dict get $d mfg]\t[dict get $d fpga]"
+    }
+    foreach c [dict get $res candidates] {
+        puts "CAND\t[dict get $c models]\t[dict get $c package]\t[dict get $c irl]\t[dict get $c bsr]\t[dict get $c cells]\t[dict get $c path]\t[dict get $c entity]"
+    }
+    set part [dict get $res part]
+    if {$part ne ""} {
+        puts "PART\t[dict get $part given]\t[dict get $part matched]\t[dict get $part message]"
+    }
+    foreach e [dict get $res errors] { puts "ERR\t$e" }
+    puts "REPORT\tEND"
+    return
+}
+
 #==============================================================================
 # dispatcher
 #==============================================================================
@@ -1022,6 +1181,8 @@ proc ::jtagid::dispatch {sub args} {
         open - connect       { return [::jtagid::cmd_open {*}$args] }
         scan - chain         { return [::jtagid::cmd_scan {*}$args] }
         identify - id        { return [::jtagid::cmd_identify {*}$args] }
+        report               { return [::jtagid::cmd_report {*}$args] }
+        gui                  { return [::jtagid::cmd_gui {*}$args] }
         close - disconnect   { return [::jtagid::cmd_close {*}$args] }
         bsdl-dir             { return [::jtagid::cmd_bsdl_dir {*}$args] }
         bsdl-index           { return [::jtagid::cmd_bsdl_index {*}$args] }
@@ -1053,7 +1214,7 @@ puts "usage: jtagid help   |   jtagid identify"
 # file inside the GUI never triggers anything).
 set ::jtagid::KNOWN_SUBS {
     help version ver status open connect scan chain identify id close disconnect
-    bsdl-dir bsdl-index bsdl-match
+    bsdl-dir bsdl-index bsdl-match report gui
 }
 if {[info exists ::argv] && [llength $::argv] > 0} {
     set sub [lindex $::argv 0]

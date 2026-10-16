@@ -1,0 +1,52 @@
+# jtagid GUI 界面文案（UTF-8，key<TAB>文本）
+# 改这里不需要动代码；缺失的键会用代码里的英文默认值。
+app_title	jtagid —— 边界扫描识别 FPGA 型号
+btn_identify	识别 FPGA 型号
+btn_scan	扫描链
+btn_reindex	重建索引
+btn_bsdl_dir	选择 BSDL 目录
+btn_clear	清除过滤
+btn_copy	复制路径
+btn_open	打开所在文件夹
+lbl_part	料号(可选)
+lbl_bsdl_dir	BSDL 目录
+lbl_chain	链上器件（JTAG 链上的所有 TAP）
+lbl_candidates	BSDL 候选（按封装/型号/关键字过滤后，选中要用的那一份）
+lbl_package	封装
+lbl_model	型号
+lbl_keyword	关键字
+lbl_selected	已选择的 BSDL
+col_device	器件
+col_part	PART
+col_idcode	IDCODE
+col_decoded	解码
+col_models	型号
+col_package	封装
+col_irl	IRL
+col_bsr	BSR
+col_file	BSDL 文件
+all	全部
+status_ready	就绪：点「识别 FPGA 型号」开始（首次会启动 Vivado 后端，约十秒）
+status_identifying	正在识别
+status_done	识别完成
+status_failed	失败
+backend_starting	正在启动 Vivado 后端
+backend_ready	Vivado 后端已就绪
+backend_dead	Vivado 后端已退出
+copied	路径已复制到剪贴板
+no_vivado	找不到 vivado.bat：请把 Vivado 的 bin 目录加入 PATH
+hint_start	用法：点「识别 FPGA 型号」→ 读 IDCODE → 过滤出可用 BSDL → 选中其一（路径会写入 %LOCALAPPDATA%\jtag_identify\selected_bsdl.txt）
+# —— 以下是 Vivado 原生菜单/对话框（jtagid_vivado_gui.tcl）用的文案 ——
+menu_identify	jtagid：识别 FPGA 型号
+menu_pick	jtagid：选择 BSDL
+menu_scan	jtagid：扫描 JTAG 链
+menu_version	jtagid：环境与版本
+arg_bsdl_dir	BSDL 目录
+arg_package	封装提示（留空=全部）
+arg_part	料号校验（可选，如 xazu3eg-sfvc784-1-i）
+arg_pick	要使用的 BSDL
+desc_identify	读 IDCODE 并用 BSDL 反查型号，结果打印到 Tcl Console
+desc_pick	从识别出的 BSDL 候选中选择一份（选中后记住路径）
+desc_scan	列出 JTAG 链上的所有 TAP
+desc_version	显示 Vivado/Tcl 版本与硬件命令兼容性
+

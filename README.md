@@ -27,6 +27,38 @@ vivado -mode batch -source D:/work2026/ai/opencode/jtag_identify/jtagid.tcl -tcl
 
 （第一条 tclarg 是子命令；只有它属于本驱动时才自动执行，所以 GUI 里 source 不会误触发。）
 
+### 图形界面（Vivado 原生菜单 + 对话框，零外部依赖）
+
+```tcl
+source D:/work2026/ai/opencode/jtag_identify/jtagid.tcl
+source D:/work2026/ai/opencode/jtag_identify/jtagid_vivado_gui.tcl
+```
+
+之后在菜单 **Tools → Custom Commands** 里：
+
+| 菜单项 | 说明 |
+|---|---|
+| `jtagid: 识别 FPGA 型号` | 对话框三格：**BSDL 目录 / 封装提示 / 料号校验** → 读 IDCODE、反查 BSDL，候选清单打印到 Tcl Console |
+| `jtagid: 选用 N: 型号 封装` | **识别成功后动态出现**：每个候选一个菜单项，**点一下就用它**（不用打字、不用记路径） |
+| `jtagid: 按路径选用` | 手工填 BSDL 路径（默认已填第一个候选），应对候选很多的情况 |
+| `jtagid: 扫描 JTAG 链` | 只列链上所有 TAP |
+| `jtagid: 环境与版本` | Vivado/Tcl 版本、硬件命令兼容性、Tk 是否可用 |
+
+选中的 BSDL 路径会写到 `%LOCALAPPDATA%\jtag_identify\selected_bsdl.txt`，方便后续脚本取用。
+
+> **为什么界面不是 Tk**：Vivado 的 Tcl **没有 Tk 运行时**，实测（GUI 模式）
+> 2018.3（Tcl 8.5.14）和 2024.2（Tcl 8.6.13）都是 `package require Tk` →
+> `can't find package Tk`，且 `toplevel` / `wm` / `ttk::button` **一个都不存在**；
+> 2024.2 只带了 Tk 的**脚本库**（`tps\tk\tk8.6`），缺 `tk86t.dll`，加进 `auto_path`
+> 后会报 `couldn't load library libtk8.6.so`。本机能找到的所有 `wish/tclsh`
+> （包括 Vivado / Vitis_HLS 树里的 `tps\win64\git-*\...`）**都是 Git for Windows 的**。
+> Xilinx 官方的 Tk 路线是 TclStore 里的 **`tk_tunnel`**（在外部 Tcl/Tk 里起 GUI，
+> Vivado 经 socket 发 Tk 命令），但它同样需要一个外部 Tcl/Tk 运行时。
+> 所以这里用 Vivado 自己的 `create_gui_custom_command` + `create_gui_custom_command_arg`
+> 做界面 —— 2018.3 / 2022.2 / 2024.2 都有这套 API，**零外部依赖**。
+> （这套 API 的参数只有文本框：选项仅 `-default` / `-comment` / `-optional`，
+> 没有 `-arg_type` / `-choice_list`，所以“选择 BSDL”用动态菜单项而不是下拉框。）
+
 ## 2. 子命令
 
 | 命令 | 作用 |
@@ -41,6 +73,8 @@ vivado -mode batch -source D:/work2026/ai/opencode/jtag_identify/jtagid.tcl -tcl
 | `jtagid bsdl-dir ?目录?` | 查看/设置 BSDL 目录（默认自动找 `./bsdl`，再找 `../vivado_tools/bsdl`） |
 | `jtagid bsdl-index ?-rebuild?` | 建立/刷新 BSDL 索引（840 个文件约 0.3~1 秒，落盘缓存，第二次瞬时） |
 | `jtagid bsdl-match 0x14710093` | 只用 IDCODE 反查 BSDL，**不碰硬件** |
+| `jtagid report ?-bsdl-dir D? ?-part P?` | 机器可读输出（制表符分隔，ASCII）：`INFO/DEV/CAND/PART/ERR` 行，供脚本与 GUI 使用 |
+| `jtagid gui` | 打开 `jtagid_vivado_gui.tcl`（需要当前解释器有 `create_gui_custom_command`） |
 
 ## 3. 实测输出（本板，Vivado 2024.2）
 
@@ -115,12 +149,25 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
    只读 TAP 不适用，即使 `catch` 接住，Vivado 仍会打印
    `[Labtoolstcl 44-56] hw_device [x] does not have a [USERCODE] property`；
    要先用 `list_property` 判断。
+9. **`catch {脚本} 变量` 里那个变量是“结果”，不是“错误”**。写成
+   `catch {::jtagid::connect} err; if {$err ne ""} {...}` 会把**成功返回值**
+   （connect 返回 URL、bsdl_index 返回文件数 840）当成错误报出来 —— 必须判
+   `catch` 的**返回码**：`if {[catch {脚本} out]} {...}`。这个坑在 GUI 里表现为
+   `ERROR: localhost:3121` / `ERROR: 840`。
+10. **GUI 相关的 API 名字要用对**：`create_gui_custom_command` /
+    `create_gui_custom_command_arg` / `get_gui_custom_command_args -command_name X` /
+    `remove_gui_custom_commands`（**没有** `delete_gui_custom_command`），
+    用 `-help` 就能在**批处理**里查到（不必开 GUI；反过来，GUI 模式下
+    `-source` 的脚本偶发被 IDE 初始化挡在后面，不适合做自动化验证）。
 
 ## 6. 文件与缓存
 
 | 文件 | 说明 |
 |---|---|
-| `jtagid.tcl` | 全部实现（约 1000 行，纯 ASCII，无 Python 依赖） |
+| `jtagid.tcl` | 全部实现（约 1200 行，纯 ASCII，无 Python 依赖） |
+| `jtagid_vivado_gui.tcl` | Vivado 原生菜单/对话框界面（零外部依赖） |
+| `jtagid_gui_msgs.txt` | 界面文案（UTF-8，`key<TAB>文本`，改文案不用动代码） |
+| `jtagid_gui.tcl` | 备用：独立 Tk 窗口 + 常驻 `vivado -mode tcl` 后端；**仅当你自己另外装了非 Git 的 Tcl/Tk 时才可用** |
 | `bsdl/`（可选） | 放自己的 BSDL 树；缺省用 `../vivado_tools/bsdl`（840 个 Xilinx 官方 BSDL） |
 
 * BSDL 索引缓存：`%LOCALAPPDATA%\jtag_identify\bsdl_index_tcl.txt`
