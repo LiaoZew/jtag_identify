@@ -35,7 +35,9 @@ vivado -mode batch -source D:/work2026/ai/opencode/jtag_identify/jtagid.tcl -tcl
 source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 ```
 
-或双击 **`jtagid_tk.cmd`**（它打开 Vivado IDE 并自动 source 同一份前端）。
+或双击 **`jtagid_tk.cmd`**（它打开 Vivado IDE 并自动 source 同一份前端；**它开出来的那个控制台
+窗口就是后端，别关** —— 里面就是 Vivado 的日志和 `jtagid: console is free ...` 那几行）。
+用 `set JTAGID_VIVADO=<你的 vivado.bat>` 可以指定版本（默认用 PATH 上的 `vivado.bat`）。
 
 窗口是**真正的 Tk 窗口**，由 Xilinx 官方 TclStore 应用 `::tclapp::xilinx::tk_tunnel` 搭桥。
 **前端 / 后端是分开的**：
@@ -77,7 +79,8 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 
 | 环境变量 | 作用 |
 |---|---|
-| `JTAGID_TKSH` | 指定用哪个 `wish.exe` 当 Tk 端。默认找 **Vivado 安装目录里自带的** `tps\win64\git-*\...\wish.exe`（本机 Tk 8.6.8），再找 PATH |
+| `JTAGID_VIVADO` | 仅供 `jtagid_tk.cmd`：指定用哪个 `vivado.bat`（如 2018.3），默认 PATH 上的那个 |
+| `JTAGID_TKSH` | 指定用哪个 `wish.exe` 当 Tk 端。默认找 **Vivado 安装目录里自带的** `tps\win64\git-*\...\wish.exe`（本机 2018.3 → Tk 8.6.8，2024.2 → Tk 8.6.13），再找 PATH |
 | `JTAGID_TK_PORT` | 隧道端口，默认 8001 |
 | `JTAGID_TK_SELFTEST` | 设为 1 跑自动自检（不用手点：窗口/行数/过滤/选定的结果打到控制台与日志） |
 
@@ -291,7 +294,7 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 | `jtagid_tk_ui.tcl` | **前端窗口本体**（Tk 控件、过滤器、点选），被送到 Tk 进程里执行 |
 | `jtagid_tk_server.tcl` | Tk 端启动脚本（绕开官方脚本的 Tcl 8.5 限制；Vivado 一断开就自己退出） |
 | `jtagid_tk_wish.cmd` | Tk 进程启动包装（避免 exec 管道继承卡死） |
-| `jtagid_tk.cmd` | 双击启动器：开 Vivado IDE 并自动 source 前端 |
+| `jtagid_tk.cmd` | 双击启动器：开 Vivado IDE 并自动 source 前端（**那个控制台窗口就是后端，别关**） |
 | `jtagid_tk_probe_idle.tcl` | 诊断：测当前会话空闲时是否服务 Tcl 事件（“不卡死”的前提） |
 | `jtagid_tk_test_nonblock.tcl` | 验证：source 立即返回、控制台空闲仍在服务、识别在后台跑完 |
 | `jtagid_tk_test_resident.tcl` | 验证：关窗=隐藏、`jtagid gui` 原样恢复、`stop` 后 Vivado 无恙 |
