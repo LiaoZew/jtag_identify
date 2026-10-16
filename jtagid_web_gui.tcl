@@ -296,9 +296,10 @@ proc ::jtagid::web::dispatch {chan method uri q body} {
         }
         "/api/defaults" {
             if {![::jtagid::web::ensure_driver]} { error "jtagid.tcl not found" }
-            set c [::jtagid::probe_compat 0]
+            # read the facts the driver already probed while loading: calling
+            # probe_compat here would load labtools and stall the first request
             set vivado ""
-            if {[dict exists $c vivado]} { set vivado [dict get $c vivado] }
+            if {[info exists ::jtagid::compat(vivado)]} { set vivado $::jtagid::compat(vivado) }
             ::jtagid::web::json_reply $chan [::jtagid::web::jobj [dict create \
                 ok 1 \
                 bsdl_dir [::jtagid::web::js [::jtagid::web::default_bsdl_dir]] \
