@@ -574,6 +574,10 @@ proc ::jtagid::tkhost::selftest {} {
     lappend report "SELFTEST|backend_resident|[expr {$S(sock) ne ""}]"
     lappend report "SELFTEST|idle_loop_alive|$S(idle)"
     lappend report "SELFTEST|window_exists|[::jtagid::tkhost::query {winfo exists .g}]"
+    lappend report "SELFTEST|ismapped|[::jtagid::tkhost::query {winfo ismapped .g}]"
+    lappend report "SELFTEST|topmost|[::jtagid::tkhost::query {wm attributes .g -topmost}]"
+    lappend report "SELFTEST|geometry|[::jtagid::tkhost::query {wm geometry .g}]"
+    lappend report "SELFTEST|raise_count|[::jtagid::tkhost::query {set ::jtagid::tkgui::S(raises)}]"
     lappend report "SELFTEST|tk_version|[::jtagid::tkhost::query {info patchlevel}]"
     set title [::jtagid::tkhost::query {wm title .g}]
     lappend report "SELFTEST|title|[::jtagid::tkhost::ascii_only $title] ([string length $title] chars)"
@@ -613,6 +617,7 @@ proc ::jtagid::tkhost::selftest {} {
     lappend report "SELFTEST|status|[::jtagid::tkhost::query {.g.st cget -text}]"
     # console must still be free: an idle timer scheduled by start must have run
     lappend report "SELFTEST|idle_loop_after_start|$S(idle)"
+    lappend report "SELFTEST|nudges|[::jtagid::tkhost::query {join [set ::jtagid::tkgui::S(nudges)] { ; }}]"
     catch {::jtagid::tkhost::send_line {::jtagid::tkgui::quit_app}}
     catch {update}
     after 500

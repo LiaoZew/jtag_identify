@@ -22,6 +22,7 @@ rem  Options (set before running):
 rem     set JTAGID_VIVADO=<path to vivado.bat>  use a specific Vivado version
 rem     set JTAGID_TKSH=<path to wish.exe>      use another Tcl/Tk shell
 rem     set JTAGID_TK_PORT=8001                tunnel port
+rem     set JTAGID_TOPMOST=1                   keep the window above Vivado
 rem     set JTAGID_NO_PAUSE=1                  never wait for a keypress
 rem  ASCII only.
 rem ===========================================================================
