@@ -52,10 +52,9 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 
 要点：
 
-* **窗口弹出的那一瞬间不会被 Vivado 抢到后层**。Tk 进程是 Vivado 的子进程，Windows 不允许它从 IDE
-  手里抢前台，而 Vivado 的主窗口又是**后**建好的，所以窗口会被盖住、看起来像最小化。现在窗口在
-  **屏幕居中**出现，并在**弹出时置顶 15 秒**（Vivado 起完自动交还，你点一下窗口也会立刻交还）。
-  实测：`topmost_while_opening=1` → `topmost_after_start=0`，几何 `1020x740+450+113`（1920×1080 居中）。
+* **窗口弹出就是普通弹出**：`wm deiconify` + `raise` + 取一次键盘焦点，出现在屏幕居中位置
+  （实测 `1020x740+450+113`，1920×1080；`ismapped=1`、`focus=.g`、`topmost=0`），
+  之后不做任何置顶把戏，叠放跟普通窗口一样。
 * **source 它不会卡住 Vivado**。实测 `source` 只花 **1.8 秒**（起 Tk 进程 + 送窗口代码 + 等窗口
   “hello”），然后立刻返回；识别、扫描等都在后台由事件循环送进来执行，控制台随即可用。
 * **后端常驻**：只要 Vivado 不关，服务就一直在。点窗口的“关闭”只是 `wm withdraw`（隐藏），

@@ -577,7 +577,8 @@ proc ::jtagid::tkhost::selftest {} {
     lappend report "SELFTEST|idle_loop_alive|$S(idle)"
     lappend report "SELFTEST|window_exists|[::jtagid::tkhost::query {winfo exists .g}]"
     lappend report "SELFTEST|ismapped|[::jtagid::tkhost::query {winfo ismapped .g}]"
-    lappend report "SELFTEST|topmost_while_opening|[::jtagid::tkhost::query {wm attributes .g -topmost}]"
+    lappend report "SELFTEST|focus|[::jtagid::tkhost::query {focus}]"
+    lappend report "SELFTEST|topmost|[::jtagid::tkhost::query {wm attributes .g -topmost}]"
     lappend report "SELFTEST|geometry|[::jtagid::tkhost::query {wm geometry .g}]"
     lappend report "SELFTEST|tk_version|[::jtagid::tkhost::query {info patchlevel}]"
     set title [::jtagid::tkhost::query {wm title .g}]
@@ -618,7 +619,6 @@ proc ::jtagid::tkhost::selftest {} {
     lappend report "SELFTEST|status|[::jtagid::tkhost::query {.g.st cget -text}]"
     # console must still be free: an idle timer scheduled by start must have run
     lappend report "SELFTEST|idle_loop_after_start|$S(idle)"
-    lappend report "SELFTEST|topmost_after_start|[::jtagid::tkhost::query {wm attributes .g -topmost}]"
     catch {::jtagid::tkhost::send_line {::jtagid::tkgui::quit_app}}
     catch {update}
     after 500

@@ -28,7 +28,6 @@ namespace eval ::jtagid::tkgui {
         watchdog   ""
         sku        {}
         t0         0
-        topmost_timer ""
         f_pkg      ""
         f_model    ""
         f_text     ""
@@ -106,30 +105,13 @@ proc ::jtagid::tkgui::center_window {} {
     return
 }
 
-proc ::jtagid::tkgui::keep_in_front {{hold 15000}} {
-    # Vivado's IDE builds its window after ours and takes the foreground, so the
-    # window would open behind it and look minimised.  Windows will not let a
-    # child process take the foreground from the IDE, so just declare the window
-    # topmost while it opens and hand the flag back once the IDE has settled.
-    variable S
+proc ::jtagid::tkgui::pop_up {} {
+    # just bring the window up when it is shown: deiconify, raise, take the
+    # keyboard focus.  No topmost games - the window behaves normally after this.
     if {![winfo exists .g]} { return }
     catch {wm deiconify .g}
-    catch {focus -force .g}
-    catch {wm attributes .g -topmost 1}
     catch {raise .g}
-    set S(topmost_timer) [after $hold ::jtagid::tkgui::drop_topmost]
-    # clicking the window counts as "I am using it now" - release immediately
-    bind .g <Button-1> {::jtagid::tkgui::drop_topmost}
-    return
-}
-
-proc ::jtagid::tkgui::drop_topmost {} {
-    variable S
-    if {$S(topmost_timer) ne ""} {
-        catch {after cancel $S(topmost_timer)}
-        set S(topmost_timer) ""
-    }
-    if {[winfo exists .g]} { catch {wm attributes .g -topmost 0} }
+    catch {focus -force .g}
     return
 }
 
@@ -183,7 +165,7 @@ proc ::jtagid::tkgui::backend_ready {} {
 
 proc ::jtagid::tkgui::show {} {
     if {![winfo exists .g]} { catch {::jtagid::tkgui::build} }
-    ::jtagid::tkgui::keep_in_front
+    ::jtagid::tkgui::pop_up
     return
 }
 
@@ -201,7 +183,7 @@ proc ::jtagid::tkgui::build {} {
     set w .g
     catch {destroy $w}
     toplevel $w
-    wm withdraw $w      ;# placed centrally and shown by keep_in_front
+    wm withdraw $w      ;# placed centrally and shown by pop_up
     wm title $w [::jtagid::tkgui::L win_title {jtagid - boundary scan FPGA identification}]
     wm minsize $w 900 620
     wm geometry $w 1020x740
@@ -751,10 +733,9 @@ set ::jtagid::tkgui::S(t0) [clock milliseconds]
 catch {bind .g <Control-q> {::jtagid::tkgui::quit_app}}
 ::jtagid::tkgui::set_status \
     [::jtagid::tkgui::L status_waiting {talking to the Vivado backend...}] busy
-# centred, and topmost while it opens so the Vivado IDE (which builds its own
-# window after ours) cannot push it to the back
+# centred, and brought to the front once when it is shown
 ::jtagid::tkgui::center_window
-::jtagid::tkgui::keep_in_front
+::jtagid::tkgui::pop_up
 # Tell the backend the window is up.  It answers with backend_ready, and THAT is
 # what starts the automatic identify - so nothing long ever runs while Vivado is
 # still sourcing the front end file (the console gets its prompt back first).
