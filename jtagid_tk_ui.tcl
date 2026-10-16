@@ -27,10 +27,8 @@ namespace eval ::jtagid::tkgui {
         ready      0
         watchdog   ""
         sku        {}
-        raises     0
-        keep_topmost 0
-        nudges     {}
         t0         0
+        topmost_timer ""
         f_pkg      ""
         f_model    ""
         f_text     ""
@@ -108,40 +106,30 @@ proc ::jtagid::tkgui::center_window {} {
     return
 }
 
-proc ::jtagid::tkgui::nudge_log {text} {
-    # keep a trace of the front/back juggling so the self test can prove it
-    variable S
-    if {![info exists S(t0)]} { set S(t0) [clock milliseconds] }
-    lappend S(nudges) "+[expr {[clock milliseconds] - $S(t0)}]ms $text"
-    return
-}
-
-proc ::jtagid::tkgui::bring_to_front {{hold 1800} {grab_focus 1}} {
-    # The Tk process is a child of Vivado, and Windows does not let it take the
-    # foreground from the IDE - so the window opens behind Vivado's window and
-    # looks minimised.  Briefly declaring it topmost gets it above the IDE, and
-    # the flag is handed back afterwards so normal stacking returns.
+proc ::jtagid::tkgui::keep_in_front {{hold 15000}} {
+    # Vivado's IDE builds its window after ours and takes the foreground, so the
+    # window would open behind it and look minimised.  Windows will not let a
+    # child process take the foreground from the IDE, so just declare the window
+    # topmost while it opens and hand the flag back once the IDE has settled.
     variable S
     if {![winfo exists .g]} { return }
     catch {wm deiconify .g}
-    if {$grab_focus} { catch {focus -force .g} }
+    catch {focus -force .g}
     catch {wm attributes .g -topmost 1}
     catch {raise .g}
-    incr S(raises)
-    ::jtagid::tkgui::nudge_log "front(topmost=1 hold=$hold focus=$grab_focus mapped=[winfo ismapped .g])"
-    after $hold [list ::jtagid::tkgui::release_topmost]
+    set S(topmost_timer) [after $hold ::jtagid::tkgui::drop_topmost]
+    # clicking the window counts as "I am using it now" - release immediately
+    bind .g <Button-1> {::jtagid::tkgui::drop_topmost}
     return
 }
 
-proc ::jtagid::tkgui::release_topmost {} {
+proc ::jtagid::tkgui::drop_topmost {} {
     variable S
-    if {![winfo exists .g]} { return }
-    if {$S(keep_topmost)} {
-        ::jtagid::tkgui::nudge_log "keep topmost=1 (JTAGID_TOPMOST)"
-        return
+    if {$S(topmost_timer) ne ""} {
+        catch {after cancel $S(topmost_timer)}
+        set S(topmost_timer) ""
     }
-    catch {wm attributes .g -topmost 0}
-    ::jtagid::tkgui::nudge_log "release(topmost=0)"
+    if {[winfo exists .g]} { catch {wm attributes .g -topmost 0} }
     return
 }
 
@@ -195,7 +183,7 @@ proc ::jtagid::tkgui::backend_ready {} {
 
 proc ::jtagid::tkgui::show {} {
     if {![winfo exists .g]} { catch {::jtagid::tkgui::build} }
-    ::jtagid::tkgui::bring_to_front 2500 1
+    ::jtagid::tkgui::keep_in_front
     return
 }
 
@@ -213,7 +201,7 @@ proc ::jtagid::tkgui::build {} {
     set w .g
     catch {destroy $w}
     toplevel $w
-    wm withdraw $w      ;# placed centrally and shown by bring_to_front
+    wm withdraw $w      ;# placed centrally and shown by keep_in_front
     wm title $w [::jtagid::tkgui::L win_title {jtagid - boundary scan FPGA identification}]
     wm minsize $w 900 620
     wm geometry $w 1020x740
@@ -737,23 +725,15 @@ proc ::jtagid::tkgui::do_quit_app {} {
 
 ::jtagid::tkgui::load_msgs
 set ::jtagid::tkgui::S(t0) [clock milliseconds]
-if {[info exists ::env(JTAGID_TOPMOST)] && \
-    [string match -nocase {1 y yes true on} $::env(JTAGID_TOPMOST)]} {
-    # keep the window above Vivado for the whole session (optional)
-    set ::jtagid::tkgui::S(keep_topmost) 1
-}
 ::jtagid::tkgui::build
 ::jtagid::tkgui::load_hints
 catch {bind .g <Control-q> {::jtagid::tkgui::quit_app}}
 ::jtagid::tkgui::set_status \
     [::jtagid::tkgui::L status_waiting {talking to the Vivado backend...}] busy
-# show it centred and in front of Vivado, which is still starting up and would
-# otherwise put its own window over ours; nudged twice more because the IDE
-# takes the foreground a few seconds later
+# centred, and topmost while it opens so the Vivado IDE (which builds its own
+# window after ours) cannot push it to the back
 ::jtagid::tkgui::center_window
-::jtagid::tkgui::bring_to_front 1500 1
-after 3000 { catch {::jtagid::tkgui::bring_to_front 1200 1} }
-after 9000 { catch {::jtagid::tkgui::bring_to_front 1200 0} }
+::jtagid::tkgui::keep_in_front
 # Tell the backend the window is up.  It answers with backend_ready, and THAT is
 # what starts the automatic identify - so nothing long ever runs while Vivado is
 # still sourcing the front end file (the console gets its prompt back first).

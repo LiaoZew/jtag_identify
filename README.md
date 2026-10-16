@@ -52,12 +52,10 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 
 要点：
 
-* **窗口不会被 Vivado 压在后层**。Tk 进程是 Vivado 的子进程，Windows 不允许它从 IDE 手里抢前台，
-  所以窗口刚弹出时会被 Vivado 盖住、看起来像最小化了。现在窗口在**屏幕居中**出现，并在
-  弹出时 / +3 秒 / +9 秒各"置顶 1.2~1.5 秒再放开"（Vivado IDE 是后起来的，会再抢一次前台），
-  实测 nudge 轨迹：`+34ms front(topmost=1) → +1547ms release → +3054ms front → +4263ms release
-  → +9038ms front → +10252ms release`，窗口几何 `1020x740+450+113`（1920×1080 居中）。
-  想让它**一直**浮在上面就设 `JTAGID_TOPMOST=1`。
+* **窗口弹出的那一瞬间不会被 Vivado 抢到后层**。Tk 进程是 Vivado 的子进程，Windows 不允许它从 IDE
+  手里抢前台，而 Vivado 的主窗口又是**后**建好的，所以窗口会被盖住、看起来像最小化。现在窗口在
+  **屏幕居中**出现，并在**弹出时置顶 15 秒**（Vivado 起完自动交还，你点一下窗口也会立刻交还）。
+  实测：`topmost_while_opening=1` → `topmost_after_start=0`，几何 `1020x740+450+113`（1920×1080 居中）。
 * **source 它不会卡住 Vivado**。实测 `source` 只花 **1.8 秒**（起 Tk 进程 + 送窗口代码 + 等窗口
   “hello”），然后立刻返回；识别、扫描等都在后台由事件循环送进来执行，控制台随即可用。
 * **后端常驻**：只要 Vivado 不关，服务就一直在。点窗口的“关闭”只是 `wm withdraw`（隐藏），
@@ -90,7 +88,6 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 | `JTAGID_VIVADO` | 仅供 `jtagid_tk.cmd`：指定用哪个 `vivado.bat`（如 2018.3），默认 PATH 上的那个 |
 | `JTAGID_TKSH` | 指定用哪个 `wish.exe` 当 Tk 端。默认找 **Vivado 安装目录里自带的** `tps\win64\git-*\...\wish.exe`（本机 2018.3 → Tk 8.6.8，2024.2 → Tk 8.6.13），再找 PATH |
 | `JTAGID_TK_PORT` | 隧道端口，默认 8001 |
-| `JTAGID_TOPMOST` | 设为 1 让窗口**一直**浮在 Vivado 上面（默认只是弹出时置顶 1~2 秒，之后恢复正常叠放） |
 | `JTAGID_TK_SELFTEST` | 设为 1 跑自动自检（不用手点：窗口/行数/过滤/选定的结果打到控制台与日志） |
 
 不阻塞这件事是**实测**的，不是推断（`jtagid_tk_test_nonblock.tcl`，Vivado 2018.3 IDE）：
