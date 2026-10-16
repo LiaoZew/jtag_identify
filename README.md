@@ -68,7 +68,7 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 | 区域 | 内容 |
 |---|---|
 | 主窗口 | 一行两个按钮：**识别 FPGA 型号** 和 **选择 BSDL**（关闭按钮不需要，窗口标题栏自带；链上器件表、BSDL 目录、封装提示、料号、复制路径/打开文件夹都已移除） |
-| BSDL 目录 | 界面里没有这个输入：后端用驱动自己的默认目录（`./bsdl`，再 `../vivado_tools/bsdl`），要换用 `jtagid bsdl-dir <dir>` |
+| BSDL 目录 | 界面里没有这个输入：默认就是**相对路径 `./bsdl`**（工具自己的目录旁边那份，840 个文件），其次是 `<脚本目录>/bsdl`；要换用 `jtagid bsdl-dir <dir>` |
 | 链上器件 | 每个 TAP 一行：器件名 / PART / IDCODE / 解码（Xilinx FPGA 会标注） |
 | 选择 BSDL 弹窗 | **封装 / 型号 / 关键字三个过滤器** + 候选表（型号/封装/IRL/BSR/cells/文件）+ 详情区（die / 同 IDCODE 型号 / PS 与 PL 差异 / 判定办法）+「使用这份 BSDL」「取消」；双击一行等于直接使用 |
 | 绑定 | 选中一行按「使用这份 BSDL」→ 器件（按 IDCODE）↔ BSDL 写入 `bindings.txt`，主窗口立刻显示，弹窗关闭 |
@@ -235,7 +235,7 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_vivado_gui.tcl
 | `jtagid scan ?-refresh?` | 扫描链，列出每个 TAP：器件名 / PART / IDCODE / 解码 |
 | `jtagid identify ?-package SFVC784? ?-part xazu3eg-sfvc784-1-i?` | **识别型号**：IDCODE → BSDL 反查 → 型号/封装/IRL/BSR，并与 Vivado 的 PART 交叉验证。`-package` 现在**真的会过滤候选**；`-part` 按等级字母归一化匹配（`xazu3eg→XCZU3EG`）并给出推荐的那份 BSDL；同一 IDCODE 的多个型号会列出 die、PS/PL 差异和最终判定办法 |
 | `jtagid close ?-shutdown-own?` | 断开；`-shutdown-own` 结束"本会话启动的" hw_server |
-| `jtagid bsdl-dir ?目录?` | 查看/设置 BSDL 目录（默认自动找 `./bsdl`，再找 `../vivado_tools/bsdl`） |
+| `jtagid bsdl-dir ?目录?` | 查看/设置 BSDL 目录（默认 **`./bsdl`** 相对路径，其次 `<脚本目录>/bsdl`；不猜别的位置） |
 | `jtagid bsdl-index ?-rebuild?` | 建立/刷新 BSDL 索引（840 个文件约 0.3~1 秒，落盘缓存，第二次瞬时） |
 | `jtagid bsdl-match 0x14710093` | 只用 IDCODE 反查 BSDL，**不碰硬件** |
 | `jtagid report ?-bsdl-dir D? ?-part P? ?-package P?` | 机器可读输出（制表符分隔，ASCII）：`INFO/DEV/CAND/PART/ERR`；`CAND` 每行是**一个文件自己的型号**并带 `siblings`（同 IDCODE 的兄弟型号）与 `recommended`（`-part` 命中），另有 `SKU / SKU-PS / SKU-PL / SKU-HOW` 行解释同硅片型号怎么区分 |
@@ -434,7 +434,7 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 | `jtagid_vivado_gui.tcl` | 可选：Vivado 原生菜单/对话框（只做识别，不动态建命令） |
 | `jtagid_gui_msgs.txt` | 原生菜单用到的文案（UTF-8，`key<TAB>文本`） |
 | `jtagid_gui.tcl` | 可选：原生 Tk 窗口 + 常驻 `vivado -mode tcl` 后端；**需要你自己装一个非 Git 的 Tcl/Tk** |
-| `bsdl/`（可选） | 放自己的 BSDL 树；缺省用 `../vivado_tools/bsdl`（840 个 Xilinx 官方 BSDL） |
+| `bsdl/` | BSDL 树就放这里（默认的相对路径 `./bsdl`，本仓库里是 840 个 Xilinx 官方文件；`.gitignore` 已忽略它） |
 
 * BSDL 索引缓存：`%LOCALAPPDATA%\jtag_identify\bsdl_index_tcl.txt`
   （首行是 BSDL 目录路径，换目录会自动重建；不会写进你的 BSDL 目录）。

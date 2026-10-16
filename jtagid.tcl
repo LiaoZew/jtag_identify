@@ -598,14 +598,15 @@ proc ::jtagid::binding_clear {idcode} {
 }
 
 proc ::jtagid::default_bsdl_dir {} {
-    set here [file dirname [file normalize [info script]]]
-    foreach cand [list \
-            [file join $here bsdl] \
-            [file join $here .. vivado_tools bsdl] \
-            "D:/work2026/ai/opencode/vivado_tools/bsdl"] {
-        if {[file isdirectory $cand]} { return [file normalize $cand] }
+    # The BSDL tree lives with the tool: ./bsdl, relative to wherever Vivado was
+    # started.  Kept RELATIVE on purpose (no absolute paths, no guessing at
+    # ../vivado_tools/bsdl any more).  Second choice is bsdl/ next to this
+    # script, so it also works when Vivado was started somewhere else.
+    # Point it anywhere with:  jtagid bsdl-dir <dir>
+    foreach cand [list "bsdl" [file join [file dirname [file normalize [info script]]] bsdl]] {
+        if {[file isdirectory $cand]} { return $cand }
     }
-    return ""
+    return "bsdl"
 }
 
 proc ::jtagid::cache_file {} {
@@ -660,8 +661,10 @@ proc ::jtagid::bsdl_index {{rebuild 0}} {
     variable BSDL
     set dir $state(bsdl_dir)
     if {$dir eq ""} { set dir [::jtagid::default_bsdl_dir]; set state(bsdl_dir) $dir }
-    if {$dir eq ""} {
-        return -code error "no BSDL directory found; set it with: jtagid bsdl-dir <dir>"
+    if {$dir eq "" || ![file isdirectory $dir]} {
+        # say which path it looked at: the default is the RELATIVE ./bsdl, so a
+        # wrong working directory is the usual reason
+        return -code error "BSDL directory not found: '$dir' (looked relative to [pwd]; set it with: jtagid bsdl-dir <dir>)"
     }
     set cache [::jtagid::cache_file]
 
