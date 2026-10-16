@@ -49,4 +49,16 @@ desc_identify	读 IDCODE 并用 BSDL 反查型号，结果打印到 Tcl Console
 desc_pick	从识别出的 BSDL 候选中选择一份（选中后记住路径）
 desc_scan	列出 JTAG 链上的所有 TAP
 desc_version	显示 Vivado/Tcl 版本与硬件命令兼容性
+# —— 以下是 tk_tunnel 原生 Tk 窗口（jtagid_tk_ui.tcl）用的文案 ——
+win_title	jtagid —— 边界扫描识别 FPGA 型号（tk_tunnel 原生窗口）
+btn_close	关闭
+btn_choose_dir	选择 BSDL 目录
+lbl_pkg_hint	封装提示
+col_name	器件
+col_cells	cells
+tag_fpga	Xilinx FPGA
+status_scanning	正在扫描 JTAG 链…
+status_indexing	正在重建 BSDL 索引…
+status_selected	已选定
+status_copied	路径已复制到剪贴板
 

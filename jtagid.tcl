@@ -286,7 +286,10 @@ proc ::jtagid::parse_opts {optsVar argList defaults} {
         if {![string match -* $key]} { incr i; continue }
         set value ""
         if {[expr {$i + 1}] < $n} { set value [lindex $argList [expr {$i + 1}]] }
-        if {$value eq "" || [string match -* $value]} {
+        # A bare switch (-refresh) is only assumed when nothing follows or the
+        # next token is another option.  An EMPTY token is a real value, so
+        # "-bsdl-dir {} -part {}" keeps its shape instead of shifting everything.
+        if {[expr {$i + 1}] >= $n || [string match -* $value]} {
             set opts($key) 1
             incr i
         } else {
