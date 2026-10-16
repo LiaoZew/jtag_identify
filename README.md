@@ -67,13 +67,13 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 
 | 区域 | 内容 |
 |---|---|
-| 主窗口按钮 | 只有 **识别 FPGA 型号** 和 **关闭**（扫描链 / 重建索引已从界面移除：识别本身就会读链，索引需要时会自动重建；要手动用还有 `jtagid scan` / `jtagid bsdl-index -rebuild`） |
-| 输入 | BSDL 目录（带“选择目录”对话框）· 封装提示 · 料号 —— 三个都会被记住并自动填回 |
+| 主窗口 | 一行两个按钮：**识别 FPGA 型号** 和 **选择 BSDL**（关闭按钮不需要，窗口标题栏自带；链上器件表、BSDL 目录、封装提示、料号、复制路径/打开文件夹都已移除） |
+| BSDL 目录 | 界面里没有这个输入：后端用驱动自己的默认目录（`./bsdl`，再 `../vivado_tools/bsdl`），要换用 `jtagid bsdl-dir <dir>` |
 | 链上器件 | 每个 TAP 一行：器件名 / PART / IDCODE / 解码（Xilinx FPGA 会标注） |
 | 选择 BSDL 弹窗 | **封装 / 型号 / 关键字三个过滤器** + 候选表（型号/封装/IRL/BSR/cells/文件）+ 详情区（die / 同 IDCODE 型号 / PS 与 PL 差异 / 判定办法）+「使用这份 BSDL」「取消」；双击一行等于直接使用 |
 | 绑定 | 选中一行按「使用这份 BSDL」→ 器件（按 IDCODE）↔ BSDL 写入 `bindings.txt`，主窗口立刻显示，弹窗关闭 |
 
-打开窗口会自动识别一次，识别完**自动弹出选 BSDL 的窗口**（也可随时点主窗口的「选择 BSDL」再打开）。
+**打开窗口什么都不会自己做**：不识别、不绑定、不弹窗，只有点「识别 FPGA 型号」之后才会读链，读完有候选就自动弹出选 BSDL 的窗口（也可以随时点主窗口的「选择 BSDL」打开）。
 任何一步在后端出错，原因都会出现在状态栏并把按钮解锁（不会再出现“点了没反应”）。
 
 **绑定是持久的、以后能直接用**：
@@ -129,21 +129,23 @@ NONBLOCK|30s check: alive=0 win=0 idle=1                            <- 前端退
 Vivado 的主循环停摆，整个 IDE 界面都是卡的；现在只在 `::jtagid::tkhost::pump` 里保留一份
 **手动**的阻塞泵，仅给“控制台不服务事件”的会话（如 `-mode tcl`）当兜底。
 
-自检（Vivado 2018.3，`JTAGID_TK_SELFTEST=1`，约 20 秒；它自己走完 识别 → 弹窗 → 过滤 → 绑定）：
+自检（Vivado 2018.3，`JTAGID_TK_SELFTEST=1`，约 20 秒；它自己走完 开窗 → 点识别 → 弹窗 → 过滤 → 绑定）：
 
 ```
 SELFTEST|backend_resident|1      SELFTEST|idle_loop_alive|1
 SELFTEST|window_exists|1         SELFTEST|ismapped|1     SELFTEST|topmost|0
-SELFTEST|geometry|900x420+510+220                        （主窗口居中）
-SELFTEST|chooser_mapped|1        SELFTEST|chooser_title|选择 BSDL 并与器件绑定
-SELFTEST|device_rows|2           SELFTEST|candidate_rows|2
-SELFTEST|filters|SFVC784 全部
+SELFTEST|geometry|620x150+650+310                        （主窗口很小，居中）
+SELFTEST|chooser_closed_on_open|1  SELFTEST|idle_candidates|0
+                                 （开窗不动手：不识别、不弹窗、没有候选）
+SELFTEST|pressing Identify FPGA
+SELFTEST|chooser_mapped|1        SELFTEST|candidate_rows|8
+SELFTEST|filters|全部 全部
 SELFTEST|rows_after_filter|2     SELFTEST|model_choices|全部 XCZU3CG XCZU3EG
 SELFTEST|rows_after_model_filter|1
 SELFTEST|selected_there|D:/.../xczu3eg_sfvc784.bsd
 SELFTEST|details|硅片 ZU3 // 同 IDCODE 型号 XCZU3CG XCZU3EG // 结论 同一颗硅片 … // PS 侧差异 … // PL 资源 …
 SELFTEST|chooser_closed|1                                （绑定后弹窗自动关闭）
-SELFTEST|binding_entry|D:/.../xczu3eg_sfvc784.bsd        （主窗口显示）
+SELFTEST|binding_entry|xczu3_0 (0x14710093, ZU3) -> xczu3eg_sfvc784.bsd  D:/.../xczu3eg_sfvc784.bsd
 SELFTEST|binding_stored|D:/.../xczu3eg_sfvc784.bsd       （bindings.txt 已写入）
 SELFTEST|binding_idcode|0x14710093
 SELFTEST|status|已绑定: xczu3_0 (0x14710093, ZU3) -> xczu3eg_sfvc784.bsd (已写入 bindings.txt)

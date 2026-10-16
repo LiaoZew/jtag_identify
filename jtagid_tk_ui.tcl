@@ -1,18 +1,19 @@
 ###############################################################################
-# jtagid_tk_ui.tcl -- the jtagid GUI window (Tk widgets).
+# jtagid_tk_ui.tcl -- the jtagid GUI (Tk widgets).
 #
 # This file is not sourced by Vivado directly: Vivado side (jtagid_tk_gui.tcl)
 # reads it, sends it through Xilinx's tk_tunnel bridge, and it is evaluated in
 # the Tk shell.  Everything here therefore runs in the Tk process:
 #
-#   main window            -> one button: identify the FPGA, plus the binding
-#   chooser dialog         -> find the BSDL (all filters) and bind it
-#   buttons/filters        -> local Tk code
-#   "identify" / "bind"    -> broadcast back to Vivado, which owns the cable
+#   main window      -> two buttons: identify the FPGA, choose/bind a BSDL
+#   chooser dialog   -> find the BSDL (all filters) and bind it
+#   buttons/filters  -> local Tk code
+#   "identify"/"bind"-> broadcast back to Vivado, which owns the cable
 #
-# Flow: identify -> the chooser opens with every candidate -> pick a row ->
-# "use this BSDL" stores device <-> BSDL in bindings.txt (the backend writes it,
-# so "jtagid bsdl-for" prints the bound path later).
+# Nothing happens by itself: opening the window does NOT search for the FPGA,
+# does NOT bind and does NOT open the chooser.  Identify first; the chooser
+# opens when there are candidates; "use this BSDL" stores device <-> BSDL in
+# bindings.txt (written by the backend, so "jtagid bsdl-for" prints it later).
 #
 # Display strings come from jtagid_gui_msgs.txt (UTF-8, key<TAB>text) so this
 # file can stay pure ASCII (Vivado decodes sourced files with the system code
@@ -24,8 +25,8 @@
 namespace eval ::jtagid::tkgui {
     variable S
     variable H
-    variable MSG
     variable P
+    variable MSG
     array set S {
         devices    {}
         candidates {}
@@ -35,10 +36,6 @@ namespace eval ::jtagid::tkgui {
         busy       0
         ready      0
         watchdog   ""
-        t0         0
-        f_pkg      ""
-        f_model    ""
-        f_text     ""
     }
     array set MSG {}
 }
@@ -109,8 +106,8 @@ proc ::jtagid::tkgui::center_window {w} {
     set width  [winfo reqwidth $w]
     set height [winfo reqheight $w]
     catch {regexp {^(\d+)x(\d+)} [wm geometry $w] -> width height}
-    if {$width < 100}  { set width 1020 }
-    if {$height < 100} { set height 740 }
+    if {$width < 100}  { set width 620 }
+    if {$height < 100} { set height 170 }
     set sw [winfo screenwidth $w]
     set sh [winfo screenheight $w]
     set x [expr {($sw - $width) / 2}]
@@ -131,7 +128,7 @@ proc ::jtagid::tkgui::pop_up {w} {
     return
 }
 
-proc ::jtagid::tkgui::set_busy {flag {timeout 60000}} {
+proc ::jtagid::tkgui::set_busy {flag {timeout 90000}} {
     variable S
     variable H
     set S(busy) $flag
@@ -143,9 +140,7 @@ proc ::jtagid::tkgui::set_busy {flag {timeout 60000}} {
         set S(watchdog) [after $timeout ::jtagid::tkgui::backend_timeout]
     }
     set state [expr {$flag ? "disabled" : "normal"}]
-    foreach b {identify} {
-        catch {$H(btn_$b) configure -state $state}
-    }
+    catch {$H(btn_identify) configure -state $state}
     return
 }
 
@@ -171,11 +166,12 @@ proc ::jtagid::tkgui::handshake_timeout {} {
 }
 
 proc ::jtagid::tkgui::backend_ready {} {
+    # the backend is up: say so and WAIT for the user.  Identifying, binding and
+    # opening the chooser are all button-driven on purpose.
     variable S
     set S(ready) 1
     ::jtagid::tkgui::set_status \
-        [::jtagid::tkgui::L status_backend_ok {Vivado backend ready - identifying}] ok
-    after 100 [list ::jtagid::tkgui::do_identify]
+        [::jtagid::tkgui::L status_ready {ready - press "Identify FPGA"}] normal
     return
 }
 
@@ -199,83 +195,42 @@ proc ::jtagid::tkgui::do_quit_app {} {
 }
 
 #==============================================================================
-# main window: identify the FPGA, show the binding
+# main window: two buttons
 #==============================================================================
 
 proc ::jtagid::tkgui::build {} {
     variable H
-    variable S
     set w .g
     catch {destroy $w}
     toplevel $w
     wm withdraw $w      ;# placed centrally and shown by pop_up
     wm title $w [::jtagid::tkgui::L win_title {jtagid - boundary scan FPGA identification}]
-    wm minsize $w 880 420
-    wm geometry $w 900x420
+    wm minsize $w 620 150
+    wm geometry $w 620x150
     wm protocol $w WM_DELETE_WINDOW ::jtagid::tkgui::do_close
 
     set top [ttk::frame $w.top]
-    grid $top -row 0 -column 0 -sticky ew -padx 8 -pady 6
+    grid $top -row 0 -column 0 -sticky ew -padx 10 -pady {10 6}
     set H(btn_identify) [ttk::button $top.b1 -text [::jtagid::tkgui::L btn_identify {Identify FPGA}] \
                              -command ::jtagid::tkgui::do_identify]
-    set H(btn_close) [ttk::button $top.b2 -text [::jtagid::tkgui::L btn_close {Close}] \
-                          -command ::jtagid::tkgui::do_close]
-    ttk::label $top.l0 -text [::jtagid::tkgui::L lbl_bsdl_dir {BSDL dir}]
-    set H(dir) [ttk::entry $top.dir -width 44]
-    ttk::button $top.pick -text "..." -width 3 -command ::jtagid::tkgui::do_choose_dir
-    ttk::label $top.l1 -text [::jtagid::tkgui::L lbl_pkg_hint {Package}]
-    set H(pkg) [ttk::entry $top.pkg -width 10]
-    ttk::label $top.l2 -text [::jtagid::tkgui::L lbl_part {Part}]
-    set H(part) [ttk::entry $top.part -width 22]
+    set H(btn_pick) [ttk::button $top.b2 -text [::jtagid::tkgui::L btn_rechoose {Choose BSDL}] \
+                         -command ::jtagid::tkgui::do_pick_bsdl]
     grid $H(btn_identify) -row 0 -column 0 -padx 2
-    grid $H(btn_close)    -row 0 -column 7 -padx 2 -sticky e
-    grid $top.l0           -row 1 -column 0 -sticky e -pady {6 0}
-    grid $H(dir)           -row 1 -column 1 -columnspan 2 -sticky ew -pady {6 0}
-    grid $top.pick         -row 1 -column 3 -pady {6 0}
-    grid $top.l1           -row 1 -column 4 -sticky e -padx {8 2} -pady {6 0}
-    grid $H(pkg)           -row 1 -column 5 -sticky w -pady {6 0}
-    grid $top.l2           -row 1 -column 6 -sticky e -padx {8 2} -pady {6 0}
-    grid $H(part)          -row 1 -column 7 -sticky w -pady {6 0}
+    grid $H(btn_pick) -row 0 -column 1 -padx 2
     grid columnconfigure $top 2 -weight 1
 
-    set dev [ttk::labelframe $w.dev -text [::jtagid::tkgui::L lbl_chain {Devices on the JTAG chain}]]
-    grid $dev -row 1 -column 0 -sticky nsew -padx 8 -pady 4
-    set H(devtv) [ttk::treeview $dev.tv -columns {name part idcode decoded} -show headings -height 4]
-    foreach {c width} {name 130 part 100 idcode 110 decoded 420} {
-        $H(devtv) heading $c -text [::jtagid::tkgui::L col_$c $c]
-        $H(devtv) column $c -width $width -anchor w
-    }
-    grid $H(devtv) -row 0 -column 0 -sticky nsew -padx 4 -pady 4
-
-    set bd [ttk::labelframe $w.bd -text [::jtagid::tkgui::L lbl_bound {Bound device <-> BSDL}]]
-    grid $bd -row 2 -column 0 -sticky ew -padx 8 -pady 4
+    set bd [ttk::frame $w.bd]
+    grid $bd -row 1 -column 0 -sticky ew -padx 10 -pady 2
+    ttk::label $bd.l -text [::jtagid::tkgui::L lbl_bound {Bound device <-> BSDL}]
     set H(bound) [ttk::entry $bd.e -state readonly]
-    set H(btn_rechoose) [ttk::button $bd.b1 -text [::jtagid::tkgui::L btn_rechoose {Choose BSDL}] \
-                             -command ::jtagid::tkgui::do_pick_bsdl]
-    ttk::button $bd.b2 -text [::jtagid::tkgui::L btn_copy {Copy path}] \
-        -command ::jtagid::tkgui::copy_path
-    ttk::button $bd.b3 -text [::jtagid::tkgui::L btn_open {Open folder}] \
-        -command ::jtagid::tkgui::open_folder
-    grid $H(bound) -row 0 -column 0 -sticky ew -padx 4 -pady 4
-    grid $H(btn_rechoose) -row 0 -column 1 -padx 2
-    grid $bd.b2 -row 0 -column 2 -padx 2
-    grid $bd.b3 -row 0 -column 3 -padx 2
-    grid columnconfigure $bd 0 -weight 1
+    grid $bd.l -row 0 -column 0 -sticky w
+    grid $H(bound) -row 0 -column 1 -sticky ew -padx 4
+    grid columnconfigure $bd 1 -weight 1
 
-    set H(env) [ttk::label $w.env -text "" -anchor w]
-    grid $H(env) -row 3 -column 0 -sticky ew -padx 10
     set H(status) [ttk::label $w.st -text [::jtagid::tkgui::L status_ready {ready}] -anchor w]
-    grid $H(status) -row 4 -column 0 -sticky ew -padx 10 -pady {2 8}
-
-    grid rowconfigure $w 1 -weight 1
+    grid $H(status) -row 2 -column 0 -sticky ew -padx 10 -pady {6 10}
     grid columnconfigure $w 0 -weight 1
     return $w
-}
-
-proc ::jtagid::tkgui::set_env {text} {
-    variable H
-    if {[winfo exists $H(env)]} { $H(env) configure -text $text }
-    return
 }
 
 #==============================================================================
@@ -283,7 +238,6 @@ proc ::jtagid::tkgui::set_env {text} {
 #==============================================================================
 
 proc ::jtagid::tkgui::build_picker {} {
-    variable H
     variable P
     set w .g.pick
     catch {destroy $w}
@@ -330,7 +284,6 @@ proc ::jtagid::tkgui::build_picker {} {
     $P(tv) column irl -anchor center
     $P(tv) column bsr -anchor center
     $P(tv) column cells -anchor center
-    catch {$P(tv) tag configure recommended -background "#fff3cd"}
     catch {$P(tv) tag configure bound -background "#d7f0dd"}
     set sb [ttk::scrollbar $cand.sb -orient vertical -command "$P(tv) yview"]
     $P(tv) configure -yscrollcommand "$sb set"
@@ -385,7 +338,8 @@ proc ::jtagid::tkgui::show_picker {} {
     variable P
     if {![winfo exists $P(win)]} { catch {::jtagid::tkgui::build_picker} }
     if {[llength $S(candidates)] == 0} {
-        ::jtagid::tkgui::set_status [::jtagid::tkgui::L status_nocand {no candidates yet - press "Identify FPGA" first}] error
+        ::jtagid::tkgui::set_status \
+            [::jtagid::tkgui::L status_nocand {no candidates yet - press "Identify FPGA" first}] error
         return
     }
     # who will be bound
@@ -446,21 +400,7 @@ proc ::jtagid::tkgui::render_raw {} {
     variable H
     if {![info exists ::jtagid::tkgui::DATA]} { return }
     set data $::jtagid::tkgui::DATA
-    if {[dict exists $data env]} { ::jtagid::tkgui::set_env [dict get $data env] }
-    # devices
     set S(devices) [::jtagid::tkgui::dget $data devices {}]
-    $H(devtv) delete [$H(devtv) children {}]
-    foreach d $S(devices) {
-        set idcode [::jtagid::tkgui::dget $d idcode]
-        set decoded ""
-        if {$idcode ne ""} {
-            set decoded "[::jtagid::tkgui::dget $d mfg] family=[::jtagid::tkgui::dget $d family] array=[::jtagid::tkgui::dget $d array]"
-            if {[::jtagid::tkgui::dget $d fpga] eq "1"} { append decoded "  [::jtagid::tkgui::L tag_fpga {Xilinx FPGA}]" }
-        }
-        $H(devtv) insert {} end -values [list [::jtagid::tkgui::dget $d name] \
-            [::jtagid::tkgui::dget $d part] $idcode $decoded]
-    }
-    # candidates
     set norm {}
     foreach c [::jtagid::tkgui::dget $data candidates {}] {
         lappend norm [::jtagid::tkgui::norm_cand $c]
@@ -469,40 +409,28 @@ proc ::jtagid::tkgui::render_raw {} {
     set S(sku) [::jtagid::tkgui::dget $data sku {}]
     set b [::jtagid::tkgui::dget $data bound]
     set S(bound) $b
-    # the binding line: full path in the entry, device <-> file beside the button
+    # binding line
     $H(bound) configure -state normal
     $H(bound) delete 0 end
     if {$b ne ""} {
-        $H(bound) insert 0 [::jtagid::tkgui::dget $b bsdl]
+        $H(bound) insert 0 "[::jtagid::tkgui::bound_label]    [::jtagid::tkgui::dget $b bsdl]"
+        set S(selected) [::jtagid::tkgui::dget $b bsdl]
+    } elseif {[::jtagid::tkgui::dget $data selected] ne ""} {
+        set S(selected) [::jtagid::tkgui::dget $data selected]
+        $H(bound) insert 0 $S(selected)
     } else {
         $H(bound) insert 0 [::jtagid::tkgui::L status_nobound {nothing bound yet}]
     }
     $H(bound) configure -state readonly
-    if {$b ne ""} {
-        set S(selected) [::jtagid::tkgui::dget $b bsdl]
-    } elseif {[::jtagid::tkgui::dget $data selected] ne ""} {
-        set S(selected) [::jtagid::tkgui::dget $data selected]
-    }
-    ::jtagid::tkgui::fill_filters
-    # a short hint the backend resolved ("784" -> SFVC784): keep both in step
-    set used [::jtagid::tkgui::dget $data pkg_used]
-    if {$used ne "" && [string equal -nocase [$H(pkg) get] $used] == 0} {
-        catch {$H(pkg) delete 0 end; $H(pkg) insert 0 $used}
-    }
-    ::jtagid::tkgui::apply_filters
     ::jtagid::tkgui::set_busy 0
     set errors [::jtagid::tkgui::dget $data errors {}]
     if {[llength $errors] > 0} {
         ::jtagid::tkgui::set_status "[::jtagid::tkgui::L status_failed {failed}]: [join $errors { | }]" error
     } else {
-        set msg "[::jtagid::tkgui::L status_done {identified}]: [llength [::jtagid::tkgui::dget $data devices {}]] TAP, [llength $S(candidates)] BSDL"
+        set msg "[::jtagid::tkgui::L status_done {identified}]: [llength $S(devices)] TAP, [llength $S(candidates)] BSDL"
         if {$b ne ""} { append msg "  |  [::jtagid::tkgui::L status_bound {bound}]: [::jtagid::tkgui::bound_label]" }
-        if {[dict exists $data pkg_note] && [dict get $data pkg_note] ne ""} {
-            append msg "  |  [dict get $data pkg_note]"
-        }
         ::jtagid::tkgui::set_status $msg ok
     }
-    ::jtagid::tkgui::save_hints
     # the point of identifying is to pick a BSDL, so open the chooser
     if {[llength $S(candidates)] > 0} { ::jtagid::tkgui::show_picker }
     return
@@ -530,7 +458,6 @@ proc ::jtagid::tkgui::norm_cand {c} {
         model   $model \
         models  [::jtagid::tkgui::dget $c models] \
         siblings [::jtagid::tkgui::dget $c siblings] \
-        recommended [::jtagid::tkgui::dget $c recommended 0] \
         bound   [::jtagid::tkgui::dget $c bound 0] \
         entity  [::jtagid::tkgui::dget $c entity] \
         package [::jtagid::tkgui::dget $c package] \
@@ -541,7 +468,6 @@ proc ::jtagid::tkgui::norm_cand {c} {
 
 proc ::jtagid::tkgui::fill_filters {} {
     variable S
-    variable H
     variable P
     if {![winfo exists $P(fpkg)]} { return }
     set pkgs {}
@@ -557,13 +483,7 @@ proc ::jtagid::tkgui::fill_filters {} {
     set all [::jtagid::tkgui::L all {All}]
     $P(fpkg) configure -values [concat [list $all] [lsort $pkgs]]
     $P(fmodel) configure -values [concat [list $all] [lsort $models]]
-    # honour the package hint that was typed before identifying
-    set hint [string trim [$H(pkg) get]]
-    if {$hint ne "" && [lsearch -exact $pkgs $hint] >= 0} {
-        $P(fpkg) set $hint
-    } elseif {[$P(fpkg) get] eq ""} {
-        $P(fpkg) set $all
-    }
+    if {[$P(fpkg) get] eq ""} { $P(fpkg) set $all }
     if {[$P(fmodel) get] eq ""} { $P(fmodel) set $all }
     return
 }
@@ -587,7 +507,6 @@ proc ::jtagid::tkgui::apply_filters {} {
     set text [string tolower [string trim [$P(ftext) get]]]
     $P(tv) delete [$P(tv) children {}]
     set shown 0
-    set star [::jtagid::tkgui::L tag_recommended {recommended}]
     set btag [::jtagid::tkgui::L tag_bound {bound}]
     foreach c $S(candidates) {
         if {$pkg ne "" && $pkg ne $all && [string equal -nocase [dict get $c package] $pkg] == 0} { continue }
@@ -602,10 +521,7 @@ proc ::jtagid::tkgui::apply_filters {} {
         set tags {}
         if {[dict get $c bound] eq "1"} {
             set label "$label  \[$btag\]"
-            lappend tags bound
-        } elseif {[dict get $c recommended] eq "1"} {
-            set label "$label  \[$star\]"
-            lappend tags recommended
+            set tags [list bound]
         }
         $P(tv) insert {} end -id [dict get $c path] -tags $tags -values [list $label \
             [dict get $c package] [dict get $c irl] [dict get $c bsr] [dict get $c cells] \
@@ -713,21 +629,17 @@ proc ::jtagid::tkgui::show_details_for_selected {} {
 
 proc ::jtagid::tkgui::do_identify {} {
     variable S
-    variable H
     if {$S(busy)} { return }
     ::jtagid::tkgui::set_busy 1
     ::jtagid::tkgui::set_status [::jtagid::tkgui::L status_identifying {identifying - reading IDCODE and looking up BSDL}] busy
-    set dir  [string trim [$H(dir) get]]
-    set pkg  [string trim [$H(pkg) get]]
-    set part [string trim [$H(part) get]]
-    ::jtagid::tkgui::remote [list ::jtagid::tkhost::cmd_identify $dir $pkg $part]
+    # no hints from the window: the backend uses its own BSDL directory
+    ::jtagid::tkgui::remote [list ::jtagid::tkhost::cmd_identify "" "" ""]
     return
 }
 
 proc ::jtagid::tkgui::use_selected {} {
     variable S
     variable H
-    variable P
     set path $S(selected)
     if {$path eq ""} {
         ::jtagid::tkgui::pick_status [::jtagid::tkgui::L status_pick_row {select a row first}] error
@@ -759,62 +671,17 @@ proc ::jtagid::tkgui::binding_saved {rec} {
     set S(bound) $rec
     ::jtagid::tkgui::set_status \
         "[::jtagid::tkgui::L status_bound {bound}]: [::jtagid::tkgui::bound_label]  ([::jtagid::tkgui::L status_saved {written to bindings.txt}])" ok
-    # refresh the markers: the bound row wins over "recommended"
+    # refresh the marker: the bound row wins over everything else
     set bsdl [::jtagid::tkgui::dget $rec bsdl]
     set new {}
     foreach c $S(candidates) {
         dict set c bound [expr {[string equal -nocase [dict get $c path] $bsdl] ? 1 : 0}]
-        if {[dict get $c bound] eq "1"} { dict set c recommended 0 }
         lappend new $c
     }
     set S(candidates) $new
     set S(selected) $bsdl
     ::jtagid::tkgui::apply_filters
     ::jtagid::tkgui::show_details_for_selected
-    return
-}
-
-proc ::jtagid::tkgui::do_choose_dir {} {
-    variable H
-    set start [string trim [$H(dir) get]]
-    if {$start eq "" || ![file isdirectory $start]} { set start [pwd] }
-    set answer [tk_chooseDirectory -title [::jtagid::tkgui::L btn_choose_dir {Choose the BSDL directory}] \
-                    -initialdir $start -mustexist 1]
-    if {$answer eq ""} { return }
-    $H(dir) delete 0 end
-    $H(dir) insert 0 [string map {\\ /} $answer]
-    return
-}
-
-proc ::jtagid::tkgui::copy_path {} {
-    variable S
-    set p $S(selected)
-    if {$p eq ""} { set p [::jtagid::tkgui::dget $S(bound) bsdl] }
-    if {$p eq ""} { return }
-    clipboard clear
-    clipboard append $p
-    ::jtagid::tkgui::set_status [::jtagid::tkgui::L status_copied {path copied to the clipboard}] ok
-    return
-}
-
-proc ::jtagid::tkgui::open_folder {} {
-    variable S
-    set path $S(selected)
-    if {$path eq ""} { set path [::jtagid::tkgui::dget $S(bound) bsdl] }
-    if {$path eq ""} { return }
-    # Explorer needs a NATIVE path.  The paths we hold use forward slashes
-    # (BSDL/report/select all use them), and "/select,D:/x/y.bsd" opens nothing
-    # useful - a "This PC" window, which is exactly what this button used to do.
-    set native [file nativename [file normalize $path]]
-    if {[file exists $native]} {
-        catch {exec explorer.exe /select,$native &}
-    } elseif {[file isdirectory [file dirname $native]]} {
-        # the file is gone but its folder is still there: show the folder
-        catch {exec explorer.exe [file dirname $native] &}
-    } else {
-        ::jtagid::tkgui::set_status \
-            [::jtagid::tkgui::L status_notfound {file not found (was the BSDL folder moved?)}] error
-    }
     return
 }
 
@@ -828,63 +695,19 @@ proc ::jtagid::tkgui::do_close {} {
 }
 
 #==============================================================================
-# remember what the user already knows (package / part / BSDL dir)
-#==============================================================================
-
-proc ::jtagid::tkgui::hint_file {} {
-    return [file join $::env(LOCALAPPDATA) jtag_identify gui_hints.txt]
-}
-
-proc ::jtagid::tkgui::save_hints {} {
-    variable H
-    set f [::jtagid::tkgui::hint_file]
-    catch {file mkdir [file dirname $f]}
-    if {[catch {open $f w} fh]} { return }
-    catch {
-        fconfigure $fh -encoding utf-8
-        puts $fh [string trim [$H(pkg) get]]
-        puts $fh [string trim [$H(part) get]]
-        puts $fh [string trim [$H(dir) get]]
-        close $fh
-    }
-    return
-}
-
-proc ::jtagid::tkgui::load_hints {} {
-    variable H
-    set f [::jtagid::tkgui::hint_file]
-    if {![file exists $f]} { return }
-    if {[catch {open $f r} fh]} { return }
-    set lines {}
-    catch {
-        fconfigure $fh -encoding utf-8
-        while {[gets $fh line] >= 0} { lappend lines [string trimright $line "\r\n"] }
-        close $fh
-    }
-    foreach {w v} [list $H(pkg) [lindex $lines 0] $H(part) [lindex $lines 1] $H(dir) [lindex $lines 2]] {
-        if {$v eq ""} { continue }
-        catch {$w delete 0 end; $w insert 0 $v}
-    }
-    return
-}
-
-#==============================================================================
 # start
 #==============================================================================
 
 ::jtagid::tkgui::load_msgs
-set ::jtagid::tkgui::S(t0) [clock milliseconds]
 ::jtagid::tkgui::build
 ::jtagid::tkgui::build_picker
-::jtagid::tkgui::load_hints
 catch {bind .g <Control-q> {::jtagid::tkgui::quit_app}}
 ::jtagid::tkgui::set_status \
     [::jtagid::tkgui::L status_waiting {talking to the Vivado backend...}] busy
 # centred, and brought to the front once when it is shown
 ::jtagid::tkgui::center_window .g
 ::jtagid::tkgui::pop_up .g
-# Tell the backend the window is up.  It answers with backend_ready, and THAT is
-# what starts the automatic identify - so nothing long ever runs while Vivado is
-# still sourcing the front end file (the console gets its prompt back first).
+# Tell the backend the window is up.  It answers with backend_ready, and then we
+# simply wait for the user - nothing is identified or bound on its own.
 after 50 { catch {::jtagid::tkgui::remote {::jtagid::tkhost::cmd_hello}} }
 after 8000 { catch {::jtagid::tkgui::handshake_timeout} }

@@ -629,14 +629,16 @@ proc ::jtagid::tkhost::selftest {} {
     lappend report "SELFTEST|idle_loop_alive|$S(idle)"
     lappend report "SELFTEST|window_exists|[::jtagid::tkhost::query {winfo exists .g}]"
     lappend report "SELFTEST|ismapped|[::jtagid::tkhost::query {winfo ismapped .g}]"
-    lappend report "SELFTEST|focus|[::jtagid::tkhost::query {focus}]"
     lappend report "SELFTEST|topmost|[::jtagid::tkhost::query {wm attributes .g -topmost}]"
     lappend report "SELFTEST|geometry|[::jtagid::tkhost::query {wm geometry .g}]"
     lappend report "SELFTEST|tk_version|[::jtagid::tkhost::query {info patchlevel}]"
     set title [::jtagid::tkhost::query {wm title .g}]
     lappend report "SELFTEST|title|[::jtagid::tkhost::ascii_only $title] ([string length $title] chars)"
-    # give the automatic identify time to arrive, then look at the chooser,
-    # which is the dialog the whole flow hangs on
+    # nothing may happen by itself: no identify, no chooser, no binding on open
+    lappend report "SELFTEST|chooser_closed_on_open|[expr {[::jtagid::tkhost::query {winfo ismapped .g.pick}] eq "0"}]"
+    lappend report "SELFTEST|idle_candidates|[::jtagid::tkhost::query {llength [.g.pick.cand.tv children {}]}]"
+    puts "SELFTEST|pressing Identify FPGA"
+    catch {::jtagid::tkhost::send_line {::jtagid::tkgui::do_identify}}
     set tries 0
     while {$tries < 60} {
         set rows [::jtagid::tkhost::query {llength [.g.pick.cand.tv children {}]}]
@@ -646,9 +648,7 @@ proc ::jtagid::tkhost::selftest {} {
         incr tries
     }
     lappend report "SELFTEST|chooser_mapped|[::jtagid::tkhost::query {winfo ismapped .g.pick}]"
-    lappend report "SELFTEST|chooser_title|[::jtagid::tkhost::query {wm title .g.pick}]"
     lappend report "SELFTEST|candidate_rows|[::jtagid::tkhost::query {llength [.g.pick.cand.tv children {}]}]"
-    lappend report "SELFTEST|device_rows|[::jtagid::tkhost::query {llength [.g.dev.tv children {}]}]"
     lappend report "SELFTEST|filters|[::jtagid::tkhost::query {list [.g.pick.cand.f.pkg get] [.g.pick.cand.f.model get]}]"
     # filter the table down to SFVC784 through the same code path the combobox uses
     catch {::jtagid::tkhost::send_line {.g.pick.cand.f.pkg set SFVC784; ::jtagid::tkgui::apply_filters}}
@@ -668,7 +668,6 @@ proc ::jtagid::tkhost::selftest {} {
     after 600
     lappend report "SELFTEST|selected_there|[::jtagid::tkhost::query {set ::jtagid::tkgui::S(selected)}]"
     lappend report "SELFTEST|details|[::jtagid::tkhost::query {regsub -all {\n} [string range [.g.pick.det get 1.0 end] 0 200] { // }}]"
-    # also prove the chooser stays closed/opens on demand after a first binding
     puts "SELFTEST|using the selected BSDL"
     catch {::jtagid::tkhost::send_line {::jtagid::tkgui::use_selected}}
     catch {update}

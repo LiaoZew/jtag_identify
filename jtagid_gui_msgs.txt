@@ -26,7 +26,7 @@ col_irl	IRL
 col_bsr	BSR
 col_file	BSDL 文件
 all	全部
-status_ready	就绪：点「识别 FPGA 型号」开始（首次会启动 Vivado 后端，约十秒）
+status_ready	就绪：点「识别 FPGA 型号」开始
 status_identifying	正在识别
 status_done	识别完成
 status_failed	失败
