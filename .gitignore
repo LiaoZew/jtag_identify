@@ -11,3 +11,7 @@ bsdl/
 # Python 遗留（本驱动已改为纯 Tcl）
 __pycache__/
 *.pyc
+
+# Vivado GUI session leftovers
+vivado_pid*.str
+*.str
