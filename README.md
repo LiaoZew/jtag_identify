@@ -29,16 +29,36 @@ vivado -mode batch -source D:/work2026/ai/opencode/jtag_identify/jtagid.tcl -tcl
 
 ### 图形界面（Xilinx 官方 tk_tunnel 的原生 Tk 窗口，推荐）
 
-在 Vivado 的 Tcl Console 里（2018.3 实测）：
+在 **Vivado IDE 的 Tcl Console** 里（2018.3 实测）：
 
 ```tcl
 source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 ```
 
-或双击 **`jtagid_tk.cmd`**（它起一个 Vivado Tcl 进程做同样的事）。
+或双击 **`jtagid_tk.cmd`**（它打开 Vivado IDE 并自动 source 同一份前端）。
 
-窗口是**真正的 Tk 窗口**，由 Xilinx 官方 TclStore 应用 `::tclapp::xilinx::tk_tunnel` 搭桥：
-Vivado 把 Tk 命令发给 Tk 进程（独立进程，窗口不会被 Vivado 卡住），按钮点击再回传到 Vivado 里执行驱动。
+窗口是**真正的 Tk 窗口**，由 Xilinx 官方 TclStore 应用 `::tclapp::xilinx::tk_tunnel` 搭桥。
+**前端 / 后端是分开的**：
+
+```
+  ┌─ 前端：独立的 wish 进程 ────────┐        ┌─ 后端：这个 Vivado 会话 ────────┐
+  │ 真正的 Tk 窗口（jtagid_tk_ui）  │  socket│ jtagid_tk_gui.tcl 常驻          │
+  │ 表格 / 过滤器 / 点选            │ ─────► │ 电缆、驱动、BSDL 索引都在这里    │
+  │ 点一下就 broadcast 一条命令 ────┼────────┤ 由 Vivado 的空闲事件循环送达     │
+  └────────────────────────────────┘        └────────────────────────────────┘
+```
+
+要点：
+
+* **source 它不会卡住 Vivado**。实测 `source` 只花 **1.8 秒**（起 Tk 进程 + 送窗口代码 + 等窗口
+  “hello”），然后立刻返回；识别、扫描等都在后台由事件循环送进来执行，控制台随即可用。
+* **后端常驻**：只要 Vivado 不关，服务就一直在。点窗口的“关闭”只是 `wm withdraw`（隐藏），
+  Tk 进程和后端都还在 —— 再 `jtagid gui` 就**原样**回来（同一个进程、表格里的数据还在）。
+  真正停掉用 `::jtagid::tkhost::stop`（或 `jtagid gui-stop`）。
+* 关掉 Vivado（或断开连接）时，Tk 端会收到 EOF 自己退出，不会留孤儿进程。
+* **必须用 Vivado IDE**：实测 `vivado -mode tcl`（纯 Tcl REPL）在等待输入时**不处理** Tcl 事件，
+  那种会话里窗口收不到回答，前端会在状态栏提示“Vivado 没有响应”。
+  所以 `jtagid_tk.cmd` 用 `-mode gui` 起 IDE，而不是 `-mode tcl`。
 
 | 区域 | 内容 |
 |---|---|
@@ -48,23 +68,66 @@ Vivado 把 Tk 命令发给 Tk 进程（独立进程，窗口不会被 Vivado 卡
 | 已选定 | 完整路径 · 复制路径 · 打开所在文件夹 · entity/IRL/BSR 详情 |
 
 打开窗口会自动识别一次；选定结果写入 `%LOCALAPPDATA%\jtag_identify\selected_bsdl.txt`。
-窗口开着时 Vivado 控制台被事件泵占用（该机制的固有行为），关窗后即空闲。
+
+| 命令 | 作用 |
+|---|---|
+| `jtagid gui` | 打开窗口；已经在跑就**恢复**窗口（不重启前端） |
+| `jtagid gui-status` | 端口 / Tk 进程 / 是否连着 / 窗口状态 / 空闲循环是否在服务 |
+| `jtagid gui-stop` | 停前端（Vivado 会话不受影响） |
 
 | 环境变量 | 作用 |
 |---|---|
 | `JTAGID_TKSH` | 指定用哪个 `wish.exe` 当 Tk 端。默认找 **Vivado 安装目录里自带的** `tps\win64\git-*\...\wish.exe`（本机 Tk 8.6.8），再找 PATH |
 | `JTAGID_TK_PORT` | 隧道端口，默认 8001 |
-| `JTAGID_TK_SELFTEST` | 设为 1 跑自动自检（不用手点：窗口/行数/过滤/选定的结果打到控制台） |
+| `JTAGID_TK_SELFTEST` | 设为 1 跑自动自检（不用手点：窗口/行数/过滤/选定的结果打到控制台与日志） |
 
-实测（Vivado 2018.3，`JTAGID_TK_SELFTEST=1`，14 秒）：
+不阻塞这件事是**实测**的，不是推断（`jtagid_tk_test_nonblock.tcl`，Vivado 2018.3 IDE）：
 
 ```
-SELFTEST|window_exists|1        SELFTEST|tk_version|8.6.8
+jtagid: Tk window is up - backend answering (console stays free)    22:16:36
+NONBLOCK|source returned after 1829 ms
+NONBLOCK|script end at 22:16:36 - the prompt is free                <- 控制台已交还
+jtagid: identify done: 8 candidate(s)                               22:16:54  <- 后台自己跑完
+NONBLOCK|idle timer at 22:16:54 - the console loop is alive while the window is open
+NONBLOCK|30s check: alive=0 win=0 idle=1                            <- 前端退出后后端仍常驻
+```
+
+为什么可行：Vivado IDE 在控制台**空闲**时仍在服务 Tcl 事件（`after` 定时器和 socket
+`fileevent` 都会触发）。这一点单独测过，见 `jtagid_tk_probe_idle.tcl`：
+
+```
+22:05:21 script end - console should be free now
+22:05:23 AFTER_2000          <- 空闲定时器触发
+22:05:49 LINE:PING1          <- socket fileevent 触发（另一进程连上来发了一行）
+```
+
+废弃的后端常驻方式（v1.0 的做法：`while {update; after 40}` 事件泵）已经去掉 —— 那种写法会让
+Vivado 的主循环停摆，整个 IDE 界面都是卡的；现在只在 `::jtagid::tkhost::pump` 里保留一份
+**手动**的阻塞泵，仅给“控制台不服务事件”的会话（如 `-mode tcl`）当兜底。
+
+自检（Vivado 2018.3，`JTAGID_TK_SELFTEST=1`，约 20 秒）：
+
+```
+SELFTEST|backend_resident|1      SELFTEST|idle_loop_alive|1
+SELFTEST|window_exists|1         SELFTEST|tk_version|8.6.8
 SELFTEST|title|jtagid —— 边界扫描识别 FPGA 型号（tk_tunnel 原生窗口）
-SELFTEST|device_rows|2          SELFTEST|candidate_rows|8
-SELFTEST|filters|全部 全部       SELFTEST|rows_after_filter|2
+SELFTEST|device_rows|2           SELFTEST|candidate_rows|8
+SELFTEST|filters|全部 全部        SELFTEST|rows_after_filter|2
 SELFTEST|selected_here|D:/.../xczu3cg_sfvc784.bsd
 SELFTEST|selected_there|D:/.../xczu3cg_sfvc784.bsd
+SELFTEST|idle_loop_after_start|1
+```
+
+“隐藏窗口 → 后端仍在 → 原样恢复”也是实测的（`jtagid_tk_test_resident.tcl`）：
+
+```
+RESIDENT|pid before hide = 23532  alive=1 win=1
+RESIDENT|after Close: pid=23532 alive=1              <- 同一个 Tk 进程，没重启
+RESIDENT|rows still held by the window: 8
+jtagid: window restored (service was already running)
+RESIDENT|rows after re-open: 8                       <- 数据还在
+RESIDENT|window is mapped again: 1
+RESIDENT|after stop: alive=0 pid=
 ```
 
 > **Tcl/Tk 运行时从哪来**：Vivado 的 Tcl **本身没有 Tk**（GUI 模式实测 2018.3 / 2024.2 都是
@@ -95,10 +158,11 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_vivado_gui.tcl
 （这套 API 的参数只有文本框：选项仅 `-default` / `-comment` / `-optional`，没有 `-arg_type`
 / `-choice_list`，所以"过滤选择"放在上面的图形界面里做，这里只做识别。）
 
-### 附：网页版界面（可选，不使用 Tk）
+### 附：不使用 Tk 的网页版（可选，未采用为主界面）
 
 `jtagid_gui.cmd` 会起一个本地 HTTP 服务并用浏览器打开界面（按钮/表格/过滤器/点选同样齐全），
 适合不方便起 Tk 进程的场合，默认端口 8760（可选 `JTAGID_PORT` / `JTAGID_NO_BROWSER`）。
+主界面是上面的 tk_tunnel 原生窗口 —— 网页版只是保留的备选，不参与推荐路径。
 
 ## 2. 子命令
 
@@ -115,7 +179,9 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_vivado_gui.tcl
 | `jtagid bsdl-index ?-rebuild?` | 建立/刷新 BSDL 索引（840 个文件约 0.3~1 秒，落盘缓存，第二次瞬时） |
 | `jtagid bsdl-match 0x14710093` | 只用 IDCODE 反查 BSDL，**不碰硬件** |
 | `jtagid report ?-bsdl-dir D? ?-part P?` | 机器可读输出（制表符分隔，ASCII）：`INFO/DEV/CAND/PART/ERR` 行，供脚本与 GUI 使用 |
-| `jtagid gui` | 打开 `jtagid_vivado_gui.tcl`（需要当前解释器有 `create_gui_custom_command`） |
+| `jtagid gui` | 打开 tk_tunnel 的 Tk 窗口（前端）；已在跑则恢复窗口 |
+| `jtagid gui-status` | 前端/后端服务状态（端口、Tk 进程、是否连着、窗口、空闲循环） |
+| `jtagid gui-stop` | 停掉 Tk 前端（Vivado 会话不受影响） |
 
 ## 3. 实测输出（本板，Vivado 2024.2）
 
@@ -200,17 +266,36 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
     `remove_gui_custom_commands`（**没有** `delete_gui_custom_command`），
     用 `-help` 就能在**批处理**里查到（不必开 GUI；反过来，GUI 模式下
     `-source` 的脚本偶发被 IDE 初始化挡在后面，不适合做自动化验证）。
+11. **“不卡死”靠的是 Vivado 自己**：IDE 模式实测控制台**空闲**时 `after` 定时器与 socket
+    `fileevent` 都会触发（`jtagid_tk_probe_idle.tcl`），所以前端可以 source 完就返回；
+    但 `vivado -mode tcl` 的 REPL 在等输入时**不处理事件**（同一脚本在里面一个标记都不出），
+    批处理模式则会在脚本结束后直接退出 —— 这就是 GUI 必须走 IDE 的原因。
+    不要再用 v1.0 那种 `while {update; after 40}` 常驻泵：Tcl 的 `update` 不跑 Vivado 的
+    Qt 主循环，IDE 会整片卡住。
+12. **长命令执行期间事件仍会被处理**：驱动里 `open_hw_target`/识别这类调用内部会让 Vivado
+    泵事件，于是新的按钮点击可能**嵌套**进来。后端用 `S(running)` 标志判断，忙时把命令
+    `after 50` 重新排队（实测：识别进行中点的“关闭”，是在识别结束后才执行的）。
+13. **非阻塞 socket 上的 `flush` 不能当错误**：为了能安全 `gets`（避免半行阻塞），隧道 socket
+    设成 `-blocking 0`；写不进去时 Tcl 会先缓冲、之后由写事件发出去，所以 `flush` 的
+    EAGAIN 要 `catch` 掉，不能当成发送失败（否则大块数据如整份窗口代码会被误判丢弃）。
+14. **source 期间不能让长活在跑**：前端窗口建好后先发一条 “hello”，后端收到才回
+    “backend_ready”，自动识别由它触发 —— 这样 source 的返回时间永远是零点几秒，
+    不会把一次 6~20 秒的识别算进启动里。
 
 ## 6. 文件与缓存
 
 | 文件 | 说明 |
 |---|---|
 | `jtagid.tcl` | 全部实现（约 1200 行，纯 ASCII，无 Python 依赖） |
-| `jtagid_tk_gui.tcl` | **图形界面（客户端）**：在 Vivado 里跑，经 tk_tunnel 驱动 Tk 窗口 |
-| `jtagid_tk_ui.tcl` | 窗口本体（Tk 控件、过滤器、点选），被送到 Tk 进程里执行 |
-| `jtagid_tk_server.tcl` | Tk 端启动脚本（绕开官方脚本的 Tcl 8.5 限制） |
+| `jtagid_tk_gui.tcl` | **后端（常驻服务）**：在 Vivado 里跑，经 tk_tunnel 驱动 Tk 窗口；source 完立刻返回控制台 |
+| `jtagid_tk_ui.tcl` | **前端窗口本体**（Tk 控件、过滤器、点选），被送到 Tk 进程里执行 |
+| `jtagid_tk_server.tcl` | Tk 端启动脚本（绕开官方脚本的 Tcl 8.5 限制；Vivado 一断开就自己退出） |
 | `jtagid_tk_wish.cmd` | Tk 进程启动包装（避免 exec 管道继承卡死） |
-| `jtagid_tk.cmd` | 双击启动器（原生 Tk 窗口） |
+| `jtagid_tk.cmd` | 双击启动器：开 Vivado IDE 并自动 source 前端 |
+| `jtagid_tk_probe_idle.tcl` | 诊断：测当前会话空闲时是否服务 Tcl 事件（“不卡死”的前提） |
+| `jtagid_tk_test_nonblock.tcl` | 验证：source 立即返回、控制台空闲仍在服务、识别在后台跑完 |
+| `jtagid_tk_test_resident.tcl` | 验证：关窗=隐藏、`jtagid gui` 原样恢复、`stop` 后 Vivado 无恙 |
+| `check_syntax.tcl` | 开发用：`tclsh check_syntax.tcl *.tcl` 只编译不执行地做语法检查 |
 | `jtagid_gui.cmd` | 可选：网页版启动器 |
 | `jtagid_web_gui.tcl` | 界面的后端：Tcl HTTP 服务 + JSON API（纯 ASCII、无外部依赖） |
 | `jtagid_web_gui.html` | 界面本体（UTF-8，可直接改样式/文案） |

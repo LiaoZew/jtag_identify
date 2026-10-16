@@ -24,6 +24,8 @@ namespace eval ::jtagid::tkgui {
         candidates {}
         selected   ""
         busy       0
+        ready      0
+        watchdog   ""
         f_pkg      ""
         f_model    ""
         f_text     ""
@@ -84,14 +86,67 @@ proc ::jtagid::tkgui::set_status {text {kind normal}} {
     return
 }
 
-proc ::jtagid::tkgui::set_busy {flag} {
+proc ::jtagid::tkgui::set_busy {flag {timeout 60000}} {
     variable S
     variable H
     set S(busy) $flag
+    catch {after cancel $S(watchdog)}
+    set S(watchdog) ""
+    if {$flag} {
+        # if Vivado never answers, say so instead of waiting forever: the plain
+        # "vivado -mode tcl" REPL does not service the window at all.
+        set S(watchdog) [after $timeout ::jtagid::tkgui::backend_timeout]
+    }
     set state [expr {$flag ? "disabled" : "normal"}]
     foreach b {identify scan reindex} {
         catch {$H(btn_$b) configure -state $state}
     }
+    return
+}
+
+proc ::jtagid::tkgui::backend_timeout {} {
+    variable S
+    if {!$S(busy)} { return }
+    ::jtagid::tkgui::set_busy 0
+    ::jtagid::tkgui::set_status \
+        [::jtagid::tkgui::L status_nobackend \
+             {no answer from Vivado - source this in the Vivado IDE Tcl console (the plain "-mode tcl" shell does not serve the window)}] \
+        error
+    return
+}
+
+proc ::jtagid::tkgui::handshake_timeout {} {
+    variable S
+    if {$S(ready)} { return }
+    ::jtagid::tkgui::set_status \
+        [::jtagid::tkgui::L status_nobackend \
+             {no answer from Vivado - source this in the Vivado IDE Tcl console (the plain "-mode tcl" shell does not serve the window)}] \
+        error
+    return
+}
+
+proc ::jtagid::tkgui::backend_ready {} {
+    variable S
+    set S(ready) 1
+    ::jtagid::tkgui::set_status \
+        [::jtagid::tkgui::L status_backend_ok {Vivado backend ready - identifying}] ok
+    after 100 [list ::jtagid::tkgui::do_identify]
+    return
+}
+
+proc ::jtagid::tkgui::show {} {
+    if {![winfo exists .g]} { catch {::jtagid::tkgui::build} }
+    catch {wm deiconify .g}
+    catch {raise .g}
+    catch {focus .g}
+    return
+}
+
+proc ::jtagid::tkgui::quit_app {} {
+    catch {::jtagid::tkgui::remote {::jtagid::tkhost::cmd_window_closed}}
+    catch {destroy .g}
+    # let the broadcast reach Vivado before the socket goes away
+    after 250 { catch {exit} }
     return
 }
 
@@ -369,7 +424,7 @@ proc ::jtagid::tkgui::do_reindex {} {
     variable S
     variable H
     if {$S(busy)} { return }
-    ::jtagid::tkgui::set_busy 1
+    ::jtagid::tkgui::set_busy 1 300000
     ::jtagid::tkgui::set_status [::jtagid::tkgui::L status_indexing {re-building the BSDL index}] busy
     ::jtagid::tkgui::remote [list ::jtagid::tkhost::cmd_reindex [string trim [$H(dir) get]]]
     return
@@ -439,8 +494,16 @@ proc ::jtagid::tkgui::open_folder {} {
 }
 
 proc ::jtagid::tkgui::do_close {} {
-    ::jtagid::tkgui::remote {::jtagid::tkhost::cmd_quit}
-    catch {destroy .g}
+    # closing the window only hides it: the Vivado backend keeps running, and
+    # "jtagid gui" (or right-clicking jtagid_tk.cmd again) brings it straight
+    # back without re-reading the JTAG chain.
+    ::jtagid::tkgui::remote {::jtagid::tkhost::cmd_window_closed}
+    catch {wm withdraw .g}
+    return
+}
+
+proc ::jtagid::tkgui::do_quit_app {} {
+    ::jtagid::tkgui::quit_app
     return
 }
 
@@ -450,5 +513,11 @@ proc ::jtagid::tkgui::do_close {} {
 
 ::jtagid::tkgui::load_msgs
 ::jtagid::tkgui::build
-::jtagid::tkgui::set_status [::jtagid::tkgui::L status_ready {ready - press "Identify FPGA"}] normal
-after 300 { catch {::jtagid::tkgui::do_identify} }
+catch {bind .g <Control-q> {::jtagid::tkgui::quit_app}}
+::jtagid::tkgui::set_status \
+    [::jtagid::tkgui::L status_waiting {talking to the Vivado backend...}] busy
+# Tell the backend the window is up.  It answers with backend_ready, and THAT is
+# what starts the automatic identify - so nothing long ever runs while Vivado is
+# still sourcing the front end file (the console gets its prompt back first).
+after 50 { catch {::jtagid::tkgui::remote {::jtagid::tkhost::cmd_hello}} }
+after 8000 { catch {::jtagid::tkgui::handshake_timeout} }

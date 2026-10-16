@@ -715,6 +715,15 @@ jtagid -- JTAG boundary-scan identification driver for Vivado (pure Tcl)
   jtagid bsdl-index ?-rebuild?      build/refresh the BSDL index (disk cached)
   jtagid bsdl-match 0x14710093      BSDL lookup by IDCODE only (no hardware)
 
+  jtagid gui                        open the Tk window (tk_tunnel front end)
+  jtagid gui-status                 is the window/backend service running?
+  jtagid gui-stop                   stop the Tk front end (Vivado keeps running)
+
+  The GUI is split: the Tk window is the front end, this Vivado session is the
+  back end (it owns the cable).  Opening it does not block: the console keeps
+  its prompt and the service stays resident until Vivado is closed.  Closing
+  the window only hides it - run "jtagid gui" to bring it straight back.
+
 Examples:
   source D:/work2026/ai/opencode/jtag_identify/jtagid.tcl
   jtagid version
@@ -1019,12 +1028,27 @@ proc ::jtagid::one_line {text} {
 }
 
 proc ::jtagid::cmd_gui {args} {
-    # Start the GUI.  The real interface is the local web UI served by Tcl
-    # (buttons, tables, filters) because Vivado's Tcl has no Tk runtime:
-    # verified in GUI mode on 2018.3 and 2024.2, "package require Tk" fails and
-    # toplevel/wm/ttk do not exist.  jtagid_gui.tcl (a native Tk window plus a
-    # vivado -mode tcl backend) is only for hosts that do have a Tcl/Tk.
+    # The GUI is the Xilinx TclStore bridge ::tclapp::xilinx::tk_tunnel: a real
+    # Tk window in its own wish process (front end) driven from this Vivado
+    # session (back end, which owns the cable).  Sourcing it does NOT block:
+    # Vivado's IDE keeps servicing Tcl events while the console sits at its
+    # prompt, so the window works and the console stays usable.
+    #
+    # vivado -mode tcl (the plain Tcl REPL) does not service events while it
+    # waits for input, so the window cannot be answered there; jtagid_tk.cmd
+    # opens the IDE instead.  The browser UI and the native dialog menu remain
+    # as optional fallbacks.
+    set compat [::jtagid::probe_compat 0]
+    if {[dict get $compat batch]} {
+        puts "note: this session looks like batch/-mode tcl; the Tk window needs the"
+        puts "      Vivado IDE (only the IDE serves Tcl events while the console is idle)"
+    }
     set here [file dirname [file normalize [info script]]]
+    set tk [file join $here jtagid_tk_gui.tcl]
+    if {[file exists $tk]} {
+        uplevel #0 [list source $tk]
+        return
+    }
     set web [file join $here jtagid_web_gui.tcl]
     if {[file exists $web]} {
         uplevel #0 [list source $web]
@@ -1033,12 +1057,31 @@ proc ::jtagid::cmd_gui {args} {
     set gui [file join $here jtagid_gui.tcl]
     if {[file exists $gui]} {
         if {[catch {package require Tk} err]} {
-            return -code error "no web GUI ($web) and no Tk ($err)"
+            return -code error "no tk_tunnel GUI ($tk), no web GUI ($web) and no Tk ($err)"
         }
         uplevel #0 [list source $gui]
         return
     }
     return -code error "no GUI file found next to jtagid.tcl ($here)"
+}
+
+proc ::jtagid::cmd_gui_status {} {
+    if {[llength [info commands ::jtagid::tkhost::status]] == 0} {
+        puts "the tk_tunnel GUI is not loaded (start it with: jtagid gui)"
+        return
+    }
+    puts [::jtagid::tkhost::status]
+    return
+}
+
+proc ::jtagid::cmd_gui_stop {} {
+    # stop the Tk front end; the Vivado session is untouched
+    if {[llength [info commands ::jtagid::tkhost::stop]] == 0} {
+        puts "the tk_tunnel GUI is not loaded, nothing to stop (start it with: jtagid gui)"
+        return
+    }
+    ::jtagid::tkhost::stop
+    return
 }
 
 proc ::jtagid::collect_report {args} {
@@ -1188,6 +1231,8 @@ proc ::jtagid::dispatch {sub args} {
         identify - id        { return [::jtagid::cmd_identify {*}$args] }
         report               { return [::jtagid::cmd_report {*}$args] }
         gui                  { return [::jtagid::cmd_gui {*}$args] }
+        gui-status           { return [::jtagid::cmd_gui_status] }
+        gui-stop             { return [::jtagid::cmd_gui_stop] }
         close - disconnect   { return [::jtagid::cmd_close {*}$args] }
         bsdl-dir             { return [::jtagid::cmd_bsdl_dir {*}$args] }
         bsdl-index           { return [::jtagid::cmd_bsdl_index {*}$args] }

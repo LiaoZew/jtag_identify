@@ -78,4 +78,10 @@ flush stdout
 
 # stay alive; the Tk event loop serves the socket and the window
 vwait ::tclapp::xilinx::tk_tunnel::local_wait_on
-::jtagid::srv::note "server event loop finished"
+
+# Vivado is gone (it closed the tunnel, or the process died): the front end has
+# nothing left to talk to, so shut down for real instead of lingering.
+::jtagid::srv::note "Vivado disconnected - shutting the Tk side down"
+catch {destroy .g}
+catch {destroy .}
+exit 0

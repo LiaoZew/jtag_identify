@@ -6,3 +6,6 @@
 .gitattributes text eol=lf
 *.txt eol=lf
 *.html eol=lf
+# Windows batch files stay CRLF (they are double-clicked, and some cmd.exe
+# constructs misbehave with LF-only files)
+*.cmd text eol=crlf

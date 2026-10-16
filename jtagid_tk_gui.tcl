@@ -2,21 +2,34 @@
 # jtagid_tk_gui.tcl -- jtagid GUI through Xilinx's official TclStore app
 #                      ::tclapp::xilinx::tk_tunnel  (no web UI, no HTML).
 #
-# This file runs INSIDE Vivado.  It:
-#   1. starts a Tcl/Tk shell (wish) as the tunnel "server"  (hidden window),
-#   2. connects to it with the tk_tunnel client,
-#   3. ships the GUI code (jtagid_tk_ui.tcl) into that Tk shell as one line,
-#   4. pumps Vivado's event loop so button clicks arrive as commands and are
-#      executed here, where the cable and the driver live.
+# Front end / back end split:
+#   front end : a real Tk window in its own wish process (jtagid_tk_ui.tcl)
+#   back end  : this file, running INSIDE Vivado, where the cable lives
 #
-# Usage (Vivado Tcl console, or vivado -mode tcl):
+# Sourcing this file does NOT block Vivado.  It launches the Tk shell, ships the
+# window code, waits for the window's "hello" (a fraction of a second) and
+# returns to the console.  Button clicks then arrive here as line commands
+# delivered by the Tcl event loop, which the Vivado IDE keeps servicing while
+# the console sits idle at its prompt, so the IDE stays usable and this service
+# stays resident until Vivado is closed.
 #
-#     source D:/.../jtag_identify/jtagid_tk_gui.tcl
+#   measured on 2018.3 in GUI mode: an "after" timer and a socket fileevent both
+#   fire while the console is idle (see tt_idle_probe.tcl) -> non blocking.
+#
+# Usage (Vivado IDE Tcl console, or the jtagid_tk.cmd launcher):
+#
+#     source D:/.../jtag_identify/jtagid_tk_gui.tcl   ;# open / re-open window
+#     ::jtagid::tkhost::status                        ;# what is running
+#     ::jtagid::tkhost::stop                          ;# stop the service
 #
 # Environment (all optional):
 #     JTAGID_TKSH        path to the wish/Tcl-Tk shell to use as the Tk side
 #     JTAGID_TK_PORT     tunnel port, default 8001
-#     JTAGID_TK_SELFTEST 1 = run the automated self test instead of waiting
+#     JTAGID_TK_SELFTEST 1 = also run the automated self test (no clicking)
+#
+# The Vivado IDE is required: "vivado -mode tcl" (the plain Tcl REPL) does not
+# service Tcl events while it waits for input, so a window started there would
+# never be answered.  Use jtagid_tk.cmd (which opens the IDE) instead.
 #
 # The tunnel transport is line based and the app never sets an encoding, so
 # everything sent (this file's GUI code and all data) is kept ASCII.
@@ -29,13 +42,19 @@ namespace eval ::jtagid::tkhost {
     array set S {
         port      8001
         sock      ""
-        done      0
         pid       ""
         wish      ""
         appdir    ""
         selftest  0
         selected  ""
         here      ""
+        running   0
+        win       0
+        hello     ""
+        idle      0
+        started   ""
+        devices   {}
+        candidates {}
     }
 }
 
@@ -61,6 +80,14 @@ proc ::jtagid::tkhost::note {text} {
     }
     puts "jtagid: $text"
     flush stdout
+    return
+}
+
+proc ::jtagid::tkhost::sleep_ms {ms} {
+    # bounded wait that keeps the event loop running (the app's own "wait")
+    set ::jtagid::tkhost::S(sleep) 0
+    after $ms [list set ::jtagid::tkhost::S(sleep) 1]
+    catch {vwait ::jtagid::tkhost::S(sleep)}
     return
 }
 
@@ -156,6 +183,16 @@ proc ::jtagid::tkhost::ascii_only {text} {
     return [string map [list "\n" " " "\r" " " "\t" " "] $out]
 }
 
+proc ::jtagid::tkhost::wait_flag {name ms} {
+    # wait (bounded, event loop stays alive) for $name to be written
+    upvar #0 $name var
+    set var ""
+    set id [after $ms [list set $name TIMEOUT]]
+    catch {vwait $name}
+    catch {after cancel $id}
+    return $var
+}
+
 #==============================================================================
 # Tk side lifecycle
 #==============================================================================
@@ -218,15 +255,13 @@ proc ::jtagid::tkhost::send_ui {} {
 }
 
 proc ::jtagid::tkhost::query {code} {
-    # Synchronous question to the Tk side.  The app's rexec_wait has no timeout,
-    # so this wraps the same handshake with one, otherwise a lost answer would
-    # block Vivado forever.
+    # Synchronous question to the Tk side; for the self test and for status.
+    # The app's rexec_wait has no timeout, so this wraps the same handshake with
+    # one, otherwise a lost answer would block Vivado forever.
     set ::tclapp::xilinx::tk_tunnel::client_return {}
     set aft [after 15000 {set ::tclapp::xilinx::tk_tunnel::client_return {TIMEOUT}}]
-    if {[catch {
-        ::tclapp::xilinx::tk_tunnel::rexec \
-            "::tclapp::xilinx::tk_tunnel::exec_push_return {$code}"
-    } err]} {
+    if {[catch {::jtagid::tkhost::send_line \
+            "::tclapp::xilinx::tk_tunnel::exec_push_return {$code}"} err]} {
         after cancel $aft
         return "ERR: $err"
     }
@@ -235,16 +270,108 @@ proc ::jtagid::tkhost::query {code} {
     return $::tclapp::xilinx::tk_tunnel::client_return
 }
 
+proc ::jtagid::tkhost::send_line {line} {
+    # one line to the Tk side (tk_tunnel's own rexec does the same thing)
+    variable S
+    if {![::jtagid::tkhost::alive]} { return -code error "not connected to the Tk window" }
+    # the channel is non blocking (safe gets); a flush that cannot complete yet
+    # is not a failure - Tcl keeps the bytes buffered and sends them later.
+    catch {puts $S(sock) $line}
+    catch {flush $S(sock)}
+    return
+}
+
 proc ::jtagid::tkhost::push {data} {
     # ship the result set to the Tk side and let it render
     set cmd "set ::jtagid::tkgui::DATA [list $data]\n::jtagid::tkgui::render"
-    ::tclapp::xilinx::tk_tunnel::rexec [string map [list "\n" "; " "\r" " "] $cmd]
+    catch {::jtagid::tkhost::send_line [string map [list "\n" "; " "\r" " "] $cmd]}
+    return
+}
+
+proc ::jtagid::tkhost::alive {} {
+    variable S
+    if {$S(sock) eq ""} { return 0 }
+    if {[catch {eof $S(sock)} e]} { return 0 }
+    return [expr {!$e}]
+}
+
+#==============================================================================
+# the socket: commands from the Tk window arrive here, executed in Vivado
+#==============================================================================
+
+proc ::jtagid::tkhost::connect_backend {host port} {
+    variable S
+    # the app's start_client sets its own socket variable and a fileevent; give
+    # the Tk shell a moment to boot, then replace the handler with ours.
+    ::jtagid::tkhost::sleep_ms 1200
+    if {[catch {::tclapp::xilinx::tk_tunnel::start_client $host $port} msg]} {
+        return "cannot connect to the Tk window: $msg"
+    }
+    set S(sock) $::tclapp::xilinx::tk_tunnel::sock
+    fconfigure $S(sock) -blocking 0 -buffering line
+    fileevent $S(sock) readable ::jtagid::tkhost::on_readable
+    return ""
+}
+
+proc ::jtagid::tkhost::on_readable {} {
+    variable S
+    set ch $S(sock)
+    if {$ch eq ""} { return }
+    if {[eof $ch]} {
+        catch {close $ch}
+        set S(sock) ""
+        set S(win) 0
+        ::jtagid::tkhost::note "Tk window disconnected (backend stays resident)"
+        return
+    }
+    set n 0
+    while {$n < 200} {
+        if {[catch {gets $ch line} got]} { break }
+        if {$got < 0} { break }
+        incr n
+        set line [string trimright $line "\r\n"]
+        if {$line eq ""} { continue }
+        ::jtagid::tkhost::run_line $line
+    }
+    return
+}
+
+proc ::jtagid::tkhost::run_line {line} {
+    variable S
+    if {$S(running)} {
+        # a command is already executing: queue this one instead of nesting
+        after 50 [list ::jtagid::tkhost::run_line $line]
+        return
+    }
+    set S(running) 1
+    set code [catch {uplevel #0 $line} res]
+    set S(running) 0
+    if {$code} {
+        ::jtagid::tkhost::note "command from the window failed: $res"
+        ::jtagid::tkhost::note "  command was: [string range $line 0 200]"
+    }
     return
 }
 
 #==============================================================================
 # callbacks executed here in Vivado (sent by the Tk side via broadcast)
 #==============================================================================
+
+proc ::jtagid::tkhost::cmd_hello {} {
+    variable S
+    set S(hello) "1"
+    set S(win) 1
+    ::jtagid::tkhost::note "Tk window is up - backend answering (console stays free)"
+    catch {::jtagid::tkhost::send_line {::jtagid::tkgui::backend_ready}}
+    return
+}
+
+proc ::jtagid::tkhost::cmd_window_closed {} {
+    variable S
+    set S(win) 0
+    ::jtagid::tkhost::note "window hidden - backend stays resident; run jtagid gui to re-open"
+    return
+}
 
 proc ::jtagid::tkhost::data_from {res} {
     set devices [list]
@@ -291,8 +418,9 @@ proc ::jtagid::tkhost::cmd_identify {args} {
             errors [list [::jtagid::tkhost::ascii_only $err]] part "" selected $S(selected)]
         return
     }
-    # honour the package hint / offer the package list to the Tk side
     set data [::jtagid::tkhost::data_from $res]
+    set S(devices) [dict get $res devices]
+    set S(candidates) [dict get $res candidates]
     ::jtagid::tkhost::push $data
     ::jtagid::tkhost::note "identify done: [llength [dict get $res candidates]] candidate(s)"
     return
@@ -311,6 +439,7 @@ proc ::jtagid::tkhost::cmd_scan {} {
     foreach d [::jtagid::devices] {
         dict lappend res devices $d
     }
+    set S(devices) [dict get $res devices]
     ::jtagid::tkhost::push [dict create env "target $::jtagid::state(url)" \
         devices [dict get $res devices] candidates $S(candidates) errors [list] \
         part "" selected $S(selected)]
@@ -321,6 +450,7 @@ proc ::jtagid::tkhost::cmd_reindex {args} {
     variable S
     set dir [lindex $args 0]
     set err ""
+    set count 0
     if {$dir ne "" && [file isdirectory $dir]} {
         set ::jtagid::state(bsdl_dir) [file normalize $dir]
     }
@@ -328,8 +458,10 @@ proc ::jtagid::tkhost::cmd_reindex {args} {
     set errors [list]
     set env "BSDL index: $count files"
     if {$err ne ""} { lappend errors [::jtagid::tkhost::ascii_only $err] }
+    set cands [list]
+    catch {set cands $S(candidates)}
     ::jtagid::tkhost::push [dict create env "$env   dir=$::jtagid::state(bsdl_dir)" \
-        devices $S(devices) candidates $S(candidates) errors $errors part "" selected $S(selected)]
+        devices $S(devices) candidates $cands errors $errors part "" selected $S(selected)]
     return
 }
 
@@ -348,9 +480,66 @@ proc ::jtagid::tkhost::cmd_select {args} {
     return $path
 }
 
+proc ::jtagid::tkhost::cmd_hide_window {} {
+    ::jtagid::tkhost::cmd_window_closed
+    return
+}
+
 proc ::jtagid::tkhost::cmd_quit {} {
+    # kept for compatibility: closing the window only hides it now
+    ::jtagid::tkhost::cmd_window_closed
+    return
+}
+
+#==============================================================================
+# control
+#==============================================================================
+
+proc ::jtagid::tkhost::status {} {
     variable S
-    set S(done) 1
+    set lines [list]
+    lappend lines "port       : $S(port)"
+    lappend lines "Tk shell   : [expr {$S(wish) eq "" ? "(not searched yet)" : $S(wish)}]"
+    lappend lines "shell pid  : [expr {$S(pid) eq "" ? "(none)" : $S(pid)}]"
+    lappend lines "connected  : [::jtagid::tkhost::alive]"
+    lappend lines "window up  : $S(win)"
+    lappend lines "idle loop  : $S(idle)   (1 = an idle timer fired after startup)"
+    lappend lines "started    : $S(started)"
+    lappend lines "selected   : $S(selected)"
+    return [join $lines \n]
+}
+
+proc ::jtagid::tkhost::show_window {} {
+    if {![::jtagid::tkhost::alive]} { return 0 }
+    catch {::jtagid::tkhost::send_line {::jtagid::tkgui::show}}
+    set ::jtagid::tkhost::S(win) 1
+    return 1
+}
+
+proc ::jtagid::tkhost::stop {} {
+    variable S
+    if {[::jtagid::tkhost::alive]} {
+        catch {::jtagid::tkhost::send_line {::jtagid::tkgui::quit_app}}
+        ::jtagid::tkhost::sleep_ms 200
+        catch {close $S(sock)}
+    }
+    set S(sock) ""
+    set S(win) 0
+    ::jtagid::tkhost::stop_server
+    ::jtagid::tkhost::note "GUI service stopped (Vivado console unaffected)"
+    return
+}
+
+proc ::jtagid::tkhost::pump {{seconds 0}} {
+    # Blocking fallback for hosts where the console does not service Tcl events
+    # (e.g. "vivado -mode tcl").  The console is busy while this runs.
+    variable S
+    set deadline [expr {$seconds > 0 ? [clock seconds] + $seconds : 0}]
+    while {[::jtagid::tkhost::alive]} {
+        catch {update}
+        after 40
+        if {$deadline > 0 && [clock seconds] >= $deadline} { break }
+    }
     return
 }
 
@@ -361,9 +550,12 @@ proc ::jtagid::tkhost::cmd_quit {} {
 proc ::jtagid::tkhost::selftest {} {
     variable S
     set report [list]
+    lappend report "SELFTEST|backend_resident|[expr {$S(sock) ne ""}]"
+    lappend report "SELFTEST|idle_loop_alive|$S(idle)"
     lappend report "SELFTEST|window_exists|[::jtagid::tkhost::query {winfo exists .g}]"
     lappend report "SELFTEST|tk_version|[::jtagid::tkhost::query {info patchlevel}]"
-    lappend report "SELFTEST|title|[::jtagid::tkhost::query {wm title .g}]"
+    set title [::jtagid::tkhost::query {wm title .g}]
+    lappend report "SELFTEST|title|[::jtagid::tkhost::ascii_only $title] ([string length $title] chars)"
     # give the automatic identify time to arrive
     set tries 0
     while {$tries < 60} {
@@ -378,45 +570,28 @@ proc ::jtagid::tkhost::selftest {} {
     lappend report "SELFTEST|filters|[::jtagid::tkhost::query {list [.g.cand.f.pkg get] [.g.cand.f.model get]}]"
     # filter the table down to SFVC784 through the same code path the combobox uses
     lappend report "SELFTEST|filter_pkg|[::jtagid::tkhost::query {set ::jtagid::tkgui::S(f_pkg) {}}]"
-    ::tclapp::xilinx::tk_tunnel::rexec {.g.cand.f.pkg set SFVC784; ::jtagid::tkgui::apply_filters}
+    catch {::jtagid::tkhost::send_line {.g.cand.f.pkg set SFVC784; ::jtagid::tkgui::apply_filters}}
     catch {update}
     after 600
     lappend report "SELFTEST|rows_after_filter|[::jtagid::tkhost::query {llength [.g.cand.tv children {}]}]"
     # select the first visible row the way a click would
-    ::tclapp::xilinx::tk_tunnel::rexec {set f [lindex [.g.cand.tv children {}] 0]; .g.cand.tv selection set $f; ::jtagid::tkgui::on_select}
+    catch {::jtagid::tkhost::send_line {set f [lindex [.g.cand.tv children {}] 0]; .g.cand.tv selection set $f; ::jtagid::tkgui::on_select}}
     set tries 0
     while {$tries < 20 && $S(selected) eq ""} { catch {update}; after 300; incr tries }
     lappend report "SELFTEST|selected_here|$S(selected)"
     lappend report "SELFTEST|selected_there|[::jtagid::tkhost::query {set ::jtagid::tkgui::S(selected)}]"
-    ::tclapp::xilinx::tk_tunnel::rexec {::jtagid::tkgui::do_close}
+    # console must still be free: an idle timer scheduled by start must have run
+    lappend report "SELFTEST|idle_loop_after_start|$S(idle)"
+    catch {::jtagid::tkhost::send_line {::jtagid::tkgui::quit_app}}
     catch {update}
     after 500
-    set S(done) 1
     foreach line $report { puts $line; ::jtagid::tkhost::note $line }
     return
 }
 
 #==============================================================================
-# main
+# main: start (or re-open) the service and give the console straight back
 #==============================================================================
-
-proc ::jtagid::tkhost::pump {} {
-    variable S
-    set n 0
-    while {!$S(done) && $n < 200000} {
-        catch {update}
-        after 40
-        incr n
-        if {$n % 250 == 0} {
-            # make sure the window is still there; otherwise stop
-            if {[catch {set alive [::jtagid::tkhost::query {winfo exists .g}]}] || $alive eq "0"} {
-                ::jtagid::tkhost::note "window closed, stopping"
-                break
-            }
-        }
-    }
-    return
-}
 
 proc ::jtagid::tkhost::main {} {
     variable S
@@ -430,6 +605,17 @@ proc ::jtagid::tkhost::main {} {
         set driver [file join $S(here) jtagid.tcl]
         if {[file exists $driver]} { uplevel #0 [list source $driver] }
     }
+    # already serving? then just bring the window back
+    if {[::jtagid::tkhost::alive]} {
+        if {[::jtagid::tkhost::show_window]} {
+            ::jtagid::tkhost::note "window restored (service was already running)"
+            puts "jtagid: window restored - the service never stopped"
+            return 1
+        }
+    }
+    # a leftover socket / shell from a front end that died in the meantime
+    if {$S(sock) ne ""} { catch {close $S(sock)}; set S(sock) "" }
+    if {$S(pid) ne ""} { ::jtagid::tkhost::stop_server }
     set S(appdir) [::jtagid::tkhost::find_appdir]
     if {$S(appdir) eq ""} {
         ::jtagid::tkhost::note "tk_tunnel app not found; install it from the Xilinx Tcl Store"
@@ -446,25 +632,46 @@ proc ::jtagid::tkhost::main {} {
         ::jtagid::tkhost::note "cannot load the tk_tunnel client procs"
         return 0
     }
-    if {[catch {set err [::jtagid::tkhost::start_server]}]} { set err $err }
+    set err [::jtagid::tkhost::start_server]
     if {$err ne ""} { ::jtagid::tkhost::note $err; return 0 }
     ::jtagid::tkhost::note "Tk shell pid  : $S(pid), tunnel port $S(port)"
-    if {[catch {::tclapp::xilinx::tk_tunnel::start_client 127.0.0.1 $S(port)} msg]} {
-        ::jtagid::tkhost::note "cannot connect to the Tk shell: $msg"
+    set err [::jtagid::tkhost::connect_backend 127.0.0.1 $S(port)]
+    if {$err ne ""} {
+        ::jtagid::tkhost::note $err
         ::jtagid::tkhost::stop_server
         return 0
     }
     ::jtagid::tkhost::note "tunnel connected"
-    if {[catch {set err [::jtagid::tkhost::send_ui]}]} { set err $err }
-    if {$err ne ""} { ::jtagid::tkhost::note $err; ::jtagid::tkhost::stop_server; return 0 }
-    ::jtagid::tkhost::note "GUI shipped to the Tk shell"
-    if {$S(selftest)} {
-        after 1500 ::jtagid::tkhost::selftest
+    set err [::jtagid::tkhost::send_ui]
+    if {$err ne ""} {
+        ::jtagid::tkhost::note $err
+        ::jtagid::tkhost::stop
+        return 0
     }
-    ::jtagid::tkhost::pump
-    ::jtagid::tkhost::stop_server
-    ::jtagid::tkhost::note "GUI closed"
+    ::jtagid::tkhost::note "GUI shipped to the Tk shell"
+    # the window answers with cmd_hello as soon as it is built; wait for that
+    # only (a fraction of a second) - the auto identify starts afterwards, so
+    # nothing long ever runs inside this call.
+    set greet [::jtagid::tkhost::wait_flag ::jtagid::tkhost::S(hello) 10000]
+    if {$greet eq "TIMEOUT" || $greet eq ""} {
+        ::jtagid::tkhost::note "no answer from the Tk window (is this the Vivado IDE console?)"
+    }
+    set S(started) [clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}]
+    # proof that the IDE keeps servicing Tcl events while the console sits idle
+    after 1500 [list ::jtagid::tkhost::heartbeat]
+    if {$S(selftest)} { after 2500 [list ::jtagid::tkhost::selftest] }
+    puts "jtagid: front end = Tk window, back end = this Vivado session"
+    puts "jtagid: console is free, service stays resident until Vivado is closed"
+    puts "jtagid: re-open the window with  jtagid gui   |   stop it with  ::jtagid::tkhost::stop"
+    flush stdout
     return 1
+}
+
+proc ::jtagid::tkhost::heartbeat {} {
+    variable S
+    set S(idle) 1
+    ::jtagid::tkhost::note "idle loop alive: the console is free and the backend keeps serving"
+    return
 }
 
 ::jtagid::tkhost::main
