@@ -31,7 +31,8 @@
 ###############################################################################
 
 set here [file dirname [file normalize [info script]]]
-source [file join $here jtagid.tcl]
+set root [file normalize [file join $here ..]]
+source [file join $root jtagid.tcl]
 
 puts "########## identify -package SFVC784 -part xazu3eg-sfvc784-1-i ##########"
 ::jtagid identify -package SFVC784 -part xazu3eg-sfvc784-1-i

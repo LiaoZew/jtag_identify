@@ -1,26 +1,11 @@
-# jtagid GUI 界面文案（UTF-8，key<TAB>文本）
-# 改这里不需要动代码；缺失的键会用代码里的英文默认值。
-app_title	jtagid —— 边界扫描识别 FPGA 型号
+# jtagid 界面文案（UTF-8，key<TAB>文本）
+# 只管 tk_tunnel 窗口（jtagid_tk_ui.tcl）用到的键；缺失的键会用代码里的英文默认值。
 btn_identify	识别 FPGA 型号
-btn_scan	扫描链
-btn_reindex	重建索引
-btn_bsdl_dir	选择 BSDL 目录
 btn_clear	清除过滤
-btn_copy	复制路径
-btn_open	打开所在文件夹
-lbl_part	料号(可选，如 xazu3eg-sfvc784-1-i)
-lbl_bsdl_dir	BSDL 目录
-lbl_chain	链上器件（JTAG 链上的所有 TAP）
 lbl_candidates	BSDL 候选（按封装/型号/关键字过滤后，选中要用的那一份）
 lbl_package	封装
 lbl_model	型号
 lbl_keyword	关键字
-lbl_selected	已选择的 BSDL
-col_device	器件
-col_part	PART
-col_idcode	IDCODE
-col_decoded	解码
-col_models	型号
 col_package	封装
 col_irl	IRL
 col_bsr	BSR
@@ -30,45 +15,12 @@ status_ready	就绪：点「识别 FPGA 型号」开始
 status_identifying	正在识别
 status_done	识别完成
 status_failed	失败
-backend_starting	正在启动 Vivado 后端
-backend_ready	Vivado 后端已就绪
-backend_dead	Vivado 后端已退出
-copied	路径已复制到剪贴板
-no_vivado	找不到 vivado.bat：请把 Vivado 的 bin 目录加入 PATH
-hint_start	用法：点「识别 FPGA 型号」→ 读 IDCODE → 过滤出可用 BSDL → 选中其一（路径会写入 %LOCALAPPDATA%\jtag_identify\selected_bsdl.txt）
-# —— 以下是 Vivado 原生菜单/对话框（jtagid_vivado_gui.tcl）用的文案 ——
-menu_identify	jtagid：识别 FPGA 型号
-menu_pick	jtagid：选择 BSDL
-menu_scan	jtagid：扫描 JTAG 链
-menu_version	jtagid：环境与版本
-arg_bsdl_dir	BSDL 目录
-arg_package	封装提示（留空=全部）
-arg_part	料号校验（可选，如 xazu3eg-sfvc784-1-i）
-arg_pick	要使用的 BSDL
-desc_identify	读 IDCODE 并用 BSDL 反查型号，结果打印到 Tcl Console
-desc_pick	从识别出的 BSDL 候选中选择一份（选中后记住路径）
-desc_scan	列出 JTAG 链上的所有 TAP
-desc_version	显示 Vivado/Tcl 版本与硬件命令兼容性
-# —— 以下是 tk_tunnel 原生 Tk 窗口（jtagid_tk_ui.tcl）用的文案 ——
 win_title	jtagid —— 边界扫描识别 FPGA 型号（tk_tunnel 原生窗口）
-btn_close	关闭
-btn_choose_dir	选择 BSDL 目录
-lbl_pkg_hint	封装提示
-col_name	器件
 col_cells	cells
-tag_fpga	Xilinx FPGA
-status_scanning	正在扫描 JTAG 链…
-status_indexing	正在重建 BSDL 索引…
 status_selected	已选定
-status_copied	路径已复制到剪贴板
 status_waiting	正在连接 Vivado 后端…
-status_backend_ok	Vivado 后端已就绪，正在自动识别…
 status_nobackend	Vivado 没有响应：请在 Vivado IDE 的 Tcl Console 里 source 本文件（-mode tcl 的纯 Tcl 窗口不会响应界面）
-status_notfound	文件不存在（BSDL 目录是不是被移动过？）
-# —— SKU 区分（同一颗硅片、同 IDCODE 的不同型号）——
 col_model	型号
-tag_recommended	推荐
-status_same_die	硅片 %s：这些型号共用同一个 IDCODE，具体 SKU 要看芯片丝印（见详情）
 sku_line_die	硅片
 sku_line_models	同 IDCODE 型号
 sku_line_same	结论
@@ -83,8 +35,7 @@ sku_how_title	如何最终确定这个 SKU
 sku_how_1	1) 看芯片丝印：型号/速度/温度都有，例如 XCZU3EG-1SFVC784I
 sku_how_2	2) 看板卡 BOM / 原理图 / 丝印（汽车级 XAZU… 与商用 XCZU… 同硅片）
 sku_how_3	3) PS 跑 Linux 时：有 Mali GPU（设备树 gpu@fd4b0000 / dmesg 里的 mali）→ EG/EV；没有 → CG
-sku_how_4	4) 已知料号就填上面「料号」再点识别，匹配的那一行会高亮为「推荐」
-
+sku_how_4	4) 也可以在弹窗里用封装/型号直接筛到那一行，再按「使用这份 BSDL」
 lbl_bound	已绑定的器件 ↔ BSDL
 btn_rechoose	选择 BSDL
 status_bound	已绑定

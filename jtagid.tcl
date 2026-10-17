@@ -1361,8 +1361,7 @@ proc ::jtagid::cmd_gui {args} {
     #
     # vivado -mode tcl (the plain Tcl REPL) does not service events while it
     # waits for input, so the window cannot be answered there; jtagid_tk.cmd
-    # opens the IDE instead.  The browser UI and the native dialog menu remain
-    # as optional fallbacks.
+    # opens the IDE instead.
     set compat [::jtagid::probe_compat 0]
     if {[dict get $compat batch]} {
         puts "note: this session looks like batch/-mode tcl; the Tk window needs the"
@@ -1370,24 +1369,11 @@ proc ::jtagid::cmd_gui {args} {
     }
     set here [file dirname [file normalize [info script]]]
     set tk [file join $here jtagid_tk_gui.tcl]
-    if {[file exists $tk]} {
-        uplevel #0 [list source $tk]
-        return
+    if {![file exists $tk]} {
+        return -code error "jtagid_tk_gui.tcl is missing next to jtagid.tcl ($here)"
     }
-    set web [file join $here jtagid_web_gui.tcl]
-    if {[file exists $web]} {
-        uplevel #0 [list source $web]
-        return
-    }
-    set gui [file join $here jtagid_gui.tcl]
-    if {[file exists $gui]} {
-        if {[catch {package require Tk} err]} {
-            return -code error "no tk_tunnel GUI ($tk), no web GUI ($web) and no Tk ($err)"
-        }
-        uplevel #0 [list source $gui]
-        return
-    }
-    return -code error "no GUI file found next to jtagid.tcl ($here)"
+    uplevel #0 [list source $tk]
+    return
 }
 
 proc ::jtagid::cmd_bind {args} {

@@ -23,9 +23,10 @@
 ###############################################################################
 
 set here [file dirname [file normalize [info script]]]
+set root [file normalize [file join $here ..]]
 
 set t0 [clock milliseconds]
-source [file join $here jtagid_tk_gui.tcl]
+source [file join $root jtagid_tk_gui.tcl]
 set t1 [clock milliseconds]
 
 puts "NONBLOCK|source returned after [expr {$t1 - $t0}] ms"

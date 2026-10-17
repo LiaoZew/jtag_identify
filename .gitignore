@@ -5,13 +5,9 @@
 webtalk*
 xsim.dir/
 
-# 本目录下的 BSDL 副本（第三方大文件，默认用 ../vivado_tools/bsdl）
+# BSDL 树（第三方大文件）：默认就是这个相对目录 ./bsdl，不进版本库
 bsdl/
 
-# Python 遗留（本驱动已改为纯 Tcl）
-__pycache__/
-*.pyc
-
-# Vivado GUI session leftovers
+# Vivado GUI 会话残留
 vivado_pid*.str
 *.str
