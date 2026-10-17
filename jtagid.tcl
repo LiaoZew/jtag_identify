@@ -576,6 +576,9 @@ proc ::jtagid::binding_set {idcode device part die package bsdl {when ""}} {
     if {$idcode eq "" || $bsdl eq ""} { return -code error "binding needs an idcode and a BSDL path" }
     if {$when eq ""} { set when [clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] }
     set key [string tolower [string trim $idcode]]
+    # store a path that resolves later even when the working directory changes
+    set resolved [::jtagid::resolve_bsdl $bsdl]
+    if {$resolved ne ""} { set bsdl $resolved }
     set out {}
     foreach b [::jtagid::binding_list] {
         if {[string tolower [dict get $b idcode]] ne $key} { lappend out $b }
@@ -597,13 +600,69 @@ proc ::jtagid::binding_clear {idcode} {
     return
 }
 
+proc ::jtagid::dget {d key {default ""}} {
+    # dict get that tolerates a missing key - a report may legitimately have no
+    # info at all (busy cable, no target), and that must not turn into a Tcl
+    # error in the middle of the GUI reply path
+    if {[catch {dict exists $d $key} have]} { return $default }
+    if {$have} { return [dict get $d $key] }
+    return $default
+}
+
+proc ::jtagid::bsdl_dir {} {
+    # the directory actually in use (may be the relative default, ./bsdl)
+    variable state
+    if {![info exists state(bsdl_dir)] || $state(bsdl_dir) eq ""} {
+        set state(bsdl_dir) [::jtagid::default_bsdl_dir]
+    }
+    return $state(bsdl_dir)
+}
+
+proc ::jtagid::here {} {
+    # directory of jtagid.tcl (captured at load time; see state(here))
+    variable state
+    if {[info exists state(here)] && $state(here) ne ""} { return $state(here) }
+    if {[info script] ne ""} { return [file dirname [file normalize [info script]]] }
+    return [file normalize [pwd]]
+}
+
+proc ::jtagid::resolve_bsdl {path} {
+    # Turn a BSDL path into one that works from here on: it is accepted as it is
+    # when it exists, otherwise a RELATIVE path is looked up again under the BSDL
+    # directory, next to the tool, and by file name - the GUI can run with a
+    # different working directory than the session that produced the path.
+    # Returns "" when nothing matches.
+    if {$path eq ""} { return "" }
+    set p [string map {\\ /} $path]
+    if {[file exists $p]} { return [file normalize $p] }
+    if {[file pathtype $p] eq "absolute"} { return "" }
+    # candidates: relative to the tool ("bsdl/xilinx/..." was produced there),
+    # then under the BSDL directory, then by file name
+    set tries [list [file join [::jtagid::here] $p]]
+    foreach dir [list [::jtagid::bsdl_dir] [file join [::jtagid::here] bsdl]] {
+        if {$dir eq ""} { continue }
+        lappend tries [file join $dir $p] [file join $dir [file tail $p]]
+    }
+    foreach cand $tries {
+        if {[file exists $cand]} { return [file normalize $cand] }
+    }
+    # last resort: someone handed us a bare file name - look for it in the tree
+    foreach dir [list [::jtagid::bsdl_dir] [file join [::jtagid::here] bsdl]] {
+        if {![file isdirectory $dir]} { continue }
+        set found {}
+        catch {::jtagid::walk $dir [file tail $p] found}
+        if {[llength $found] > 0} { return [file normalize [lindex $found 0]] }
+    }
+    return ""
+}
+
 proc ::jtagid::default_bsdl_dir {} {
     # The BSDL tree lives with the tool: ./bsdl, relative to wherever Vivado was
     # started.  Kept RELATIVE on purpose (no absolute paths, no guessing at
     # ../vivado_tools/bsdl any more).  Second choice is bsdl/ next to this
     # script, so it also works when Vivado was started somewhere else.
     # Point it anywhere with:  jtagid bsdl-dir <dir>
-    foreach cand [list "bsdl" [file join [file dirname [file normalize [info script]]] bsdl]] {
+    foreach cand [list "bsdl" [file join [::jtagid::here] bsdl]] {
         if {[file isdirectory $cand]} { return $cand }
     }
     return "bsdl"
@@ -1408,9 +1467,11 @@ proc ::jtagid::cmd_bind {args} {
     }
     puts "# device <-> BSDL bindings ([llength $rows])"
     foreach b $rows {
+        set path [::jtagid::resolve_bsdl [dict get $b bsdl]]
+        if {$path eq ""} { set path "[dict get $b bsdl]  (MISSING)" }
         puts [format "  %-12s %-12s die=%-6s pkg=%-8s %s" \
                   [dict get $b idcode] [dict get $b device] [dict get $b die] \
-                  [dict get $b package] [dict get $b bsdl]]
+                  [dict get $b package] $path]
     }
     puts "  file: [::jtagid::bindings_file]"
     return $rows
@@ -1437,9 +1498,18 @@ proc ::jtagid::cmd_bsdl_for {args} {
     if {$rec eq ""} {
         return -code error "no BSDL is bound to $idc (bind one: jtagid bind -idcode $idc -bsdl <path>)"
     }
+    # the record may have been made from another directory: resolve it again
+    set stored [dict get $rec bsdl]
+    set path [::jtagid::resolve_bsdl $stored]
+    if {$path eq ""} {
+        return -code error "the BSDL bound to $idc is not on disk any more: $stored"
+    }
     puts "device: [dict get $rec device]  idcode: [dict get $rec idcode]  die: [dict get $rec die]  package: [dict get $rec package]"
-    puts "BSDL  : [dict get $rec bsdl]"
-    return [dict get $rec bsdl]
+    puts "BSDL  : $path"
+    if {[file normalize $path] ne [file normalize $stored]} {
+        puts "        (stored as '$stored' - resolved against the BSDL directory)"
+    }
+    return $path
 }
 
 proc ::jtagid::cmd_gui_status {} {
@@ -1618,7 +1688,12 @@ proc ::jtagid::collect_report {args} {
                 if {$part_fam ne "" && \
                     [::jtagid::grade_norm $model] eq [::jtagid::grade_norm $part_fam]} { set rec 1 }
                 set isbound 0
-                if {$bound ne "" && [dict get $bound bsdl] eq $path} { set isbound 1 }
+                if {$bound ne ""} {
+                    # the stored path and the candidate path can be written
+                    # differently (relative vs absolute); compare resolved forms
+                    set bpath [::jtagid::resolve_bsdl [dict get $bound bsdl]]
+                    if {$bpath ne "" && [file normalize $bpath] eq [file normalize $path]} { set isbound 1 }
+                }
                 dict lappend res candidates [dict create \
                     models $models model $model siblings $sib \
                     bound $isbound recommended $rec \
@@ -1684,7 +1759,7 @@ proc ::jtagid::cmd_report {args} {
     }
     set info [dict get $res info]
     if {[dict exists $info sku_models]} {
-        puts "SKU\t[dict get $info die]\t[dict get $info sku_decidable]\t[dict get $info sku_models]"
+        puts "SKU\t[::jtagid::dget $info die]\t[dict get $info sku_decidable]\t[dict get $info sku_models]"
         foreach key {sku_ps sku_pl} {
             if {[dict exists $info $key]} {
                 # the driver joins the lines with " | " - split on that single
@@ -1706,7 +1781,7 @@ proc ::jtagid::cmd_report {args} {
         puts "PART\t[dict get $part given]\t[dict get $part matched]\t[dict get $part package]\t[dict get $part message]"
     }
     if {[dict exists $info bound_bsdl]} {
-        puts "BIND\t[dict get $info bound_idcode]\t[dict get $info bound_device]\t[dict get $info die]\t[dict get $info bound_bsdl]\t[dict get $info bound_when]"
+        puts "BIND\t[dict get $info bound_idcode]\t[dict get $info bound_device]\t[::jtagid::dget $info die]\t[dict get $info bound_bsdl]\t[dict get $info bound_when]"
     }
     foreach e [dict get $res errors] { puts "ERR\t$e" }
     puts "REPORT\tEND"
@@ -1753,6 +1828,9 @@ proc ::jtagid_identify {args} { return [::jtagid identify {*}$args] }
 #==============================================================================
 
 ::jtagid::probe_compat 1
+# remember where this file lives while it is being sourced: "info script" is
+# empty later on (inside a proc), and the BSDL tree sits next to the tool
+set ::jtagid::state(here) [file dirname [file normalize [info script]]]
 set ::jtagid::state(bsdl_dir) [::jtagid::default_bsdl_dir]
 puts "jtagid loaded: Vivado $::jtagid::compat(vivado) / Tcl $::jtagid::compat(tcl), hardware commands [expr {$::jtagid::compat(hw_commands) ? {available} : {MISSING}}], BSDL dir $::jtagid::state(bsdl_dir)"
 puts "usage: jtagid help   |   jtagid identify"

@@ -87,6 +87,9 @@ jtagid identify                 ;# 输出里会多一行  bound BSDL : ...
 
 绑定文件 `%LOCALAPPDATA%\jtagid_identify\bindings.txt`，一行一条、
 `idcode<TAB>device<TAB>part<TAB>die<TAB>package<TAB>bsdl<TAB>when`（ASCII，可直接编辑）。
+记录里存的是**解析后的绝对路径**；取用时再解析一次（当前目录 → 工具目录 → BSDL 目录 →
+按文件名全树搜索），所以换工作目录、甚至把 BSDL 树搬走，绑定都还能用；
+文件真的没了就在 `jtagid bind` 里标 `(MISSING)`、`bsdl-for` 报明确错误。
 重开窗口或重新识别时会自动带出已有绑定，那一行在弹窗里标成「已绑定」并自动选中。
 
 | 命令 | 作用 |
@@ -96,7 +99,7 @@ jtagid identify                 ;# 输出里会多一行  bound BSDL : ...
 | `jtagid gui-stop` | 停前端（Vivado 会话不受影响） |
   （首行是 BSDL 目录路径，换目录会自动重建；不会写进你的 BSDL 目录）。
 * 器件 ↔ BSDL 绑定：`%LOCALAPPDATA%\jtagid_identify\bindings.txt`
-| `jtagid bsdl-for ?-idcode X?` | 打印/返回绑定的 BSDL 路径（脚本可用；不带 `-idcode` 就用链上那颗 FPGA） |
+| `jtagid bsdl-for ?-idcode X?` | 打印/返回绑定的 BSDL 路径（脚本可用；不带 `-idcode` 就用链上那颗 FPGA）。记录里存的是解析后的绝对路径，取用时再解析一次，换工作目录/搬树都不怕 |
 
 | 环境变量 | 作用 |
 |---|---|
@@ -398,6 +401,18 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 19. **`get_parts` 没匹配到会打 WARNING，`catch` 拦不住**：查器件库时先拼对通配符，
     封装未知就别拼出 `xczu3cg--*`（用 `xczu3cg-*`），并且用 `get_parts -quiet`，
     否则每次识别都会冒出 `[Coretcl 2-179] No part matched ...`。
+20. **报告里可能压根没有 `info`**（同一条线上有两个 IDE 抢电缆、hw_server 没起来时）：
+    后端的回包代码里写 `dict get [dict get $res info] die` 就会抛
+    `key "die" not known in dictionary`（2022.2 上实测到），把真正的错误盖掉。
+    这类取值一律走 `::jtagid::dget`，并且有 errors 时把 errors 报到窗口。
+21. **相对路径的 BSDL 不能假设工作目录相同**：`./bsdl` 是相对路径，窗口在
+    “Vivado 从别的目录启动”的会话里绑定过一份相对路径，回到另一个会话
+    （工作目录不同）就成了 `no such BSDL file`。所以
+    `::jtagid::resolve_bsdl` 会按 “当前目录 → 工具目录 → BSDL 目录 → 文件名全树搜索”
+    依次解析，绑定记录存**解析后的绝对路径**，用的时候再解析一次
+    （树被搬走也还能按文件名找回来）；`jtagid bind` 对找不到的项标 `(MISSING)`。
+    同理 `<script dir>` 是用 `[info script]` 在 **source 时**记进 `state(here)` 的，
+    运行期在 proc 里 `[info script]` 是空的，不能依赖它。
 
 ## 6. 文件与缓存
 

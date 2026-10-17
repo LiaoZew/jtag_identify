@@ -424,10 +424,14 @@ proc ::jtagid::tkhost::data_from {res} {
                        die [dict get $info die] \
                        bsdl [dict get $info bound_bsdl] \
                        when [dict get $info bound_when]]
-        # package: take it from the candidate that was bound
-        foreach c [dict get $res candidates] {
-            if {[string equal -nocase [dict get $c path] [dict get $info bound_bsdl]]} {
-                dict set bound package [dict get $c package]
+        # package: take it from the candidate that was bound (stored and candidate
+        # paths may be written differently, so compare resolved forms)
+        set bp [::jtagid::resolve_bsdl [dict get $info bound_bsdl]]
+        if {$bp ne ""} {
+            foreach c [dict get $res candidates] {
+                if {[string equal -nocase [file normalize [dict get $c path]] [file normalize $bp]]} {
+                    dict set bound package [dict get $c package]
+                }
             }
         }
     }
@@ -460,7 +464,18 @@ proc ::jtagid::tkhost::cmd_identify {args} {
     set S(devices) [dict get $res devices]
     set S(candidates) [dict get $res candidates]
     ::jtagid::tkhost::push $data
-    ::jtagid::tkhost::note "identify done: [llength [dict get $res candidates]] candidate(s), die [dict get [dict get $res info] die]"
+    # a report can legitimately have no info (busy cable, no target): never let
+    # this log line throw, it used to hide the real error behind
+    # 'key "die" not known in dictionary'
+    set where ""
+    set info [dict get $res info]
+    if {[dict exists $info die]} { set where ", die [dict get $info die]" }
+    set errors [dict get $res errors]
+    if {[llength $errors] > 0} {
+        ::jtagid::tkhost::note "identify done with [llength $errors] problem(s): [join $errors { | }]"
+    } else {
+        ::jtagid::tkhost::note "identify done: [llength [dict get $res candidates]] candidate(s)$where"
+    }
     return
 }
 
@@ -508,21 +523,6 @@ proc ::jtagid::tkhost::cmd_reindex {args} {
     return
 }
 
-proc ::jtagid::tkhost::cmd_select {args} {
-    variable S
-    set path [string map {\\ /} [lindex $args 0]]
-    if {$path eq "" || ![file exists $path]} {
-        ::jtagid::tkhost::note "select: not a file: $path"
-        return
-    }
-    set S(selected) $path
-    set fh [open [file join [::jtagid::tkhost::datadir] selected_bsdl.txt] w]
-    puts $fh $path
-    close $fh
-    ::jtagid::tkhost::note "selected: $path (remembered in selected_bsdl.txt)"
-    return $path
-}
-
 proc ::jtagid::tkhost::cmd_bind {args} {
     # The chooser in the Tk window picked a BSDL: remember device <-> BSDL so
     # the answer is reusable ("jtagid bsdl-for" prints the path later).
@@ -539,12 +539,17 @@ proc ::jtagid::tkhost::cmd_bind {args} {
             "::jtagid::tkgui::show_error {[::jtagid::tkhost::ascii_only {no FPGA device to bind to - identify first}]}"}
         return
     }
-    if {![file exists $bsdl]} {
+    # the window may hold a path relative to a different working directory (the
+    # same tree reached through ./bsdl): resolve it before giving up
+    set resolved [::jtagid::resolve_bsdl $bsdl]
+    if {$resolved eq ""} {
         ::jtagid::tkhost::note "bind refused: no such BSDL file: $bsdl"
         catch {::jtagid::tkhost::send_line \
-            "::jtagid::tkgui::show_error {[::jtagid::tkhost::ascii_only {that BSDL file does not exist any more}]}"}
+            "::jtagid::tkgui::show_error {[::jtagid::tkhost::ascii_only \
+                "BSDL file not found: $bsdl (looked in [pwd] and in [::jtagid::bsdl_dir])"]}"}
         return
     }
+    set bsdl $resolved
     if {[catch {set rec [::jtagid::binding_set $idcode $device $part $die $package $bsdl]} err]} {
         ::jtagid::tkhost::note "bind failed: $err"
         return
