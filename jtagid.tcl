@@ -681,12 +681,23 @@ proc ::jtagid::bsdl_index {{rebuild 0}} {
                 incr count
             }
             close $fh
-            if {$count > 0} { return $count }
+            if {$count > 0} {
+                # The tree may have moved since the cache was written (it did on
+                # this machine): cached paths then fail with "couldn't open ..."
+                # in the middle of identify.  Checking 840 paths costs ~10 ms.
+                set stale 0
+                foreach p [array names BSDL] {
+                    if {![file exists $p]} { unset BSDL($p); incr stale }
+                }
+                if {$stale == 0} { return $count }
+                ::jtagid::log "    $stale cached BSDL path(s) no longer exist - rebuilding the index"
+            }
         } else {
             close $fh
         }
     }
 
+    array unset BSDL      ;# never keep hits from an earlier location around
     set files {}
     ::jtagid::walk $dir *.bsd  files
     ::jtagid::walk $dir *.bsdl files
@@ -717,8 +728,12 @@ proc ::jtagid::bsdl_index {{rebuild 0}} {
 }
 
 proc ::jtagid::bsdl_details {path} {
-    set text [::jtagid::read_text $path]
-    set d [dict create path $path entity "" irl 0 bsr 0 package "" cells 0]
+    set d [dict create path $path entity "" irl 0 bsr 0 package "" cells 0 missing 0]
+    # a BSDL that disappeared (moved tree, deleted file) must not abort identify
+    if {[catch {set text [::jtagid::read_text $path]} err]} {
+        dict set d missing 1
+        return $d
+    }
     if {[regexp -nocase {attribute\s+IDCODE_REGISTER\s+of\s+(\S+)\s*:} $text -> ent]} {
         dict set d entity $ent
     } elseif {[regexp -nocase {entity\s+(\S+)\s+is} $text -> ent]} {
@@ -1602,7 +1617,14 @@ proc ::jtagid::collect_report {args} {
         foreach group $want_groups {
             set models [join [dict get $group models] /]
             foreach path [dict get $group paths] {
-                set entity [dict get [::jtagid::bsdl_details $path] entity]
+                set det [::jtagid::bsdl_details $path]
+                if {[dict get $det missing]} {
+                    # skip it, but say so - one unreadable file must not kill the
+                    # whole identification
+                    dict lappend res errors "BSDL file is gone: $path"
+                    continue
+                }
+                set entity [dict get $det entity]
                 set model [::jtagid::model_of $entity]
                 set sib {}
                 foreach m [dict get $group models] { if {$m ne $model} { lappend sib $m } }
