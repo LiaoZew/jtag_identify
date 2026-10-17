@@ -65,12 +65,23 @@ set ::jtagid::tkhost::S(here) [file dirname [file normalize [info script]]]
 #==============================================================================
 
 proc ::jtagid::tkhost::datadir {} {
+    # Anything under %LOCALAPPDATA%\jtagid_identify (logs, index, bindings) is
+    # disposable: it may be deleted by hand while a session runs (it happened),
+    # so every use must recreate it and must never depend on it.
+    if {![info exists ::env(LOCALAPPDATA)] || $::env(LOCALAPPDATA) eq ""} {
+        catch {file mkdir [file join $::env(TEMP) jtag_identify]}
+        return [file join $::env(TEMP) jtag_identify]
+    }
     set dir [file join $::env(LOCALAPPDATA) jtag_identify]
     catch {file mkdir $dir}
     return $dir
 }
 
 proc ::jtagid::tkhost::note {text} {
+    # console FIRST: the log file must never be able to swallow the message
+    # (its directory can disappear at any moment)
+    puts "jtagid: $text"
+    flush stdout
     set path [file join [::jtagid::tkhost::datadir] tk_gui.log]
     if {[catch {open $path a} fh]} { return }
     catch {
@@ -78,8 +89,6 @@ proc ::jtagid::tkhost::note {text} {
         puts $fh "[clock format [clock seconds] -format {%H:%M:%S}] $text"
         close $fh
     }
-    puts "jtagid: $text"
-    flush stdout
     return
 }
 
