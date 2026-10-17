@@ -8,6 +8,9 @@ xsim.dir/
 # BSDL 树（第三方大文件）：默认就是这个相对目录 ./bsdl，不进版本库
 bsdl/
 
+# 器件 ↔ BSDL 绑定（本机数据，跟着工具走但不进版本库）
+.jtagid/
+
 # Vivado GUI 会话残留
 vivado_pid*.str
 *.str

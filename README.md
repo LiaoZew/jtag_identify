@@ -71,7 +71,7 @@ source D:/work2026/ai/opencode/jtag_identify/jtagid_tk_gui.tcl
 | BSDL 目录 | 界面里没有这个输入：默认就是**相对路径 `./bsdl`**（工具自己的目录旁边那份，840 个文件），其次是 `<脚本目录>/bsdl`；要换用 `jtagid bsdl-dir <dir>` |
 | 链上器件 | 每个 TAP 一行：器件名 / PART / IDCODE / 解码（Xilinx FPGA 会标注） |
 | 选择 BSDL 弹窗 | **封装 / 型号 / 关键字三个过滤器** + 候选表（型号/封装/IRL/BSR/cells/文件）+ 详情区（die / 同 IDCODE 型号 / PS 与 PL 差异 / 判定办法）+「使用这份 BSDL」「取消」；双击一行等于直接使用 |
-| 绑定 | 选中一行按「使用这份 BSDL」→ 器件（按 IDCODE）↔ BSDL 写入 `bindings.txt`，主窗口立刻显示，弹窗关闭 |
+| 绑定 | 选中一行按「使用这份 BSDL」→ 器件（按 IDCODE）↔ BSDL 写入 `<工具目录>\.jtagid\bindings.txt`，主窗口立刻显示，弹窗关闭 |
 
 **打开窗口什么都不会自己做**：不识别、不绑定、不弹窗，只有点「识别 FPGA 型号」之后才会读链，读完有候选就自动弹出选 BSDL 的窗口（也可以随时点主窗口的「选择 BSDL」打开）。
 任何一步在后端出错，原因都会出现在状态栏并把按钮解锁（不会再出现“点了没反应”）。
@@ -85,7 +85,7 @@ jtagid bind -idcode 0x14710093 -bsdl <path>     ;# 手工绑一份
 jtagid identify                 ;# 输出里会多一行  bound BSDL : ...
 ```
 
-绑定文件 `%LOCALAPPDATA%\jtagid_identify\bindings.txt`，一行一条、
+绑定文件 `<工具目录>\.jtagid\bindings.txt`（跟着工具走、不进版本库；`%LOCALAPPDATA%\jtagid_identify` 只放可丢的日志和索引缓存），一行一条、
 `idcode<TAB>device<TAB>part<TAB>die<TAB>package<TAB>bsdl<TAB>when`（ASCII，可直接编辑）。
 记录里存的是**解析后的绝对路径**；取用时再解析一次（当前目录 → 工具目录 → BSDL 目录 →
 按文件名全树搜索），所以换工作目录、甚至把 BSDL 树搬走，绑定都还能用；
@@ -98,7 +98,7 @@ jtagid identify                 ;# 输出里会多一行  bound BSDL : ...
 | `jtagid gui-status` | 端口 / Tk 进程 / 是否连着 / 窗口状态 / 空闲循环是否在服务 |
 | `jtagid gui-stop` | 停前端（Vivado 会话不受影响） |
   （首行是 BSDL 目录路径，换目录会自动重建；不会写进你的 BSDL 目录）。
-* 器件 ↔ BSDL 绑定：`%LOCALAPPDATA%\jtagid_identify\bindings.txt`
+* 器件 ↔ BSDL 绑定：`<工具目录>\.jtagid\bindings.txt`（第一次运行会自动从旧的 `%LOCALAPPDATA%\jtagid_identify\bindings.txt` 导入一次）
 | `jtagid bsdl-for ?-idcode X?` | 打印/返回绑定的 BSDL 路径（脚本可用；不带 `-idcode` 就用链上那颗 FPGA）。记录里存的是解析后的绝对路径，取用时再解析一次，换工作目录/搬树都不怕 |
 
 | 环境变量 | 作用 |
@@ -309,8 +309,8 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 | 型号 | 下拉里是**每个文件自己的型号**（`XCZU3CG`、`XCZU3EG`，不再是合并的 `XCZU3CG/XCZU3EG`）→ 再选 `XCZU3EG` 只剩 **1** 行（`rows_after_model_filter=1`） |
 | 关键字 | 匹配 路径 / 实体名 / 型号 / 封装 |
 
-而且**封装提示、料号、BSDL 目录会被记住**（`%LOCALAPPDATA%\jtag_identify\gui_hints.txt`）：
-下次开窗自动填好，`-part` 命中的候选自动高亮成「推荐」并带 ★。
+封装/型号就用弹窗里那两个下拉框筛（界面不再有“封装提示/料号”输入框）；
+已经在弹窗里绑定的那一行会标成「已绑定」并自动选中。
 
 ## 4. 版本自动兼容（按能力探测，不写死版本号）
 
@@ -409,7 +409,7 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
     “Vivado 从别的目录启动”的会话里绑定过一份相对路径，回到另一个会话
     （工作目录不同）就成了 `no such BSDL file`。所以
     `::jtagid::resolve_bsdl` 会按 “当前目录 → 工具目录 → BSDL 目录 → 文件名全树搜索”
-    依次解析，绑定记录存**解析后的绝对路径**，用的时候再解析一次
+    依次解析，绑定记录存在 `<工具目录>\.jtagid\bindings.txt`（跟工具走，不放 `%LOCALAPPDATA%`——那里只放可丢的日志和索引），存**解析后的绝对路径**，用的时候再解析一次
     （树被搬走也还能按文件名找回来）；`jtagid bind` 对找不到的项标 `(MISSING)`。
     同理 `<script dir>` 是用 `[info script]` 在 **source 时**记进 `state(here)` 的，
     运行期在 proc 里 `[info script]` 是空的，不能依赖它。
@@ -432,9 +432,10 @@ stopped the hw_server that this session launched (port 3121, pid 29144)
 | `tests/check_syntax.tcl` | 开发用：`tclsh tests/check_syntax.tcl *.tcl` 只编译不执行地做语法检查 |
 | `jtagid_gui_msgs.txt` | 界面文案（UTF-8，`key<TAB>文本`；只含 tk_tunnel 窗口用到的键，缺失就走代码里的英文默认值） |
 | `bsdl/` | BSDL 树就放这里（默认的相对路径 `./bsdl`，本仓库里是 840 个 Xilinx 官方文件；`.gitignore` 已忽略它） |
+| .jtagid/ | 器件 ↔ BSDL 绑定（indings.txt，跑起来才会生成；.gitignore 已忽略） |
 
 * BSDL 索引缓存：`%LOCALAPPDATA%\jtag_identify\bsdl_index_tcl.txt`
   （首行是 BSDL 目录路径，换目录会自动重建；不会写进你的 BSDL 目录）。
-* 器件 ↔ BSDL 绑定：`%LOCALAPPDATA%\jtagid_identify\bindings.txt`
+* 器件 ↔ BSDL 绑定：`<工具目录>\.jtagid\bindings.txt`（第一次运行会自动从旧的 `%LOCALAPPDATA%\jtagid_identify\bindings.txt` 导入一次）
   （GUI 里按「使用这份 BSDL」时写入；`jtagid bsdl-for` 读它；可直接编辑）。
 * 性能：840 个文件建索引 0.3~1 秒；之后命中缓存瞬时。

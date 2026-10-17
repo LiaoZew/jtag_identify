@@ -518,16 +518,34 @@ proc ::jtagid::device_records {} {
 #   jtagid bind                       list them
 #   jtagid bind -idcode 0x14710093 -bsdl <path>
 #   jtagid bsdl-for                   print the BSDL bound to the FPGA on the chain
-# File: <cache dir>/bindings.txt, one tab separated record per line.
+# File: <tool dir>/.jtagid/bindings.txt (durable state, travels with the tool -
+# %LOCALAPPDATA%\jtagid_identify is for the disposable bits: logs and the index
+# cache, which is why a wipe there must not take the bindings with it).
 #==============================================================================
 
 proc ::jtagid::bindings_file {} {
-    set cache [::jtagid::cache_file]
-    return [file join [file dirname $cache] bindings.txt]
+    set dir [file join [::jtagid::here] .jtagid]
+    if {[catch {file mkdir $dir}]} {
+        # read-only checkout: keep working, just without the durability
+        set dir [file dirname [::jtagid::cache_file]]
+    }
+    return [file join $dir bindings.txt]
+}
+
+proc ::jtagid::bindings_migrate {} {
+    # first run after the move: pick up a bindings.txt from the old location
+    set new [::jtagid::bindings_file]
+    if {[file exists $new]} { return }
+    set old [file join [file dirname [::jtagid::cache_file]] bindings.txt]
+    if {![file exists $old]} { return }
+    if {[catch {file copy $old $new}]} { return }
+    ::jtagid::log "    bindings imported from $old"
+    return
 }
 
 proc ::jtagid::binding_list {} {
     set out {}
+    ::jtagid::bindings_migrate
     set f [::jtagid::bindings_file]
     if {![file exists $f]} { return $out }
     if {[catch {open $f r} fh]} { return $out }
@@ -1449,11 +1467,13 @@ proc ::jtagid::cmd_bind {args} {
         return
     }
     if {$opts(-idcode) ne "" && $opts(-bsdl) ne ""} {
-        if {![file exists $opts(-bsdl)]} {
-            return -code error "no such BSDL file: $opts(-bsdl)"
+        # accept a relative path from any working directory (see resolve_bsdl)
+        set path [::jtagid::resolve_bsdl $opts(-bsdl)]
+        if {$path eq ""} {
+            return -code error "no such BSDL file: $opts(-bsdl) (looked in [pwd], next to the tool and under [::jtagid::bsdl_dir])"
         }
         set rec [::jtagid::binding_set $opts(-idcode) $opts(-device) $opts(-part) \
-                     $opts(-die) $opts(-package) $opts(-bsdl)]
+                     $opts(-die) $opts(-package) $path]
         puts "bound: [dict get $rec idcode] ([dict get $rec device]) -> [dict get $rec bsdl]"
         puts "file  : [::jtagid::bindings_file]"
         return $rec
